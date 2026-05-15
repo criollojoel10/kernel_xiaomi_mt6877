@@ -72,7 +72,7 @@ jobs:
             libssl-dev libelf-dev python3 python-is-python3 \
             wget curl patch zip unzip rsync \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-            lz4 zstd xz-utils ca-certificates
+            lz4 zstd xz-utils ca-certificates gnupg software-properties-common
 
       - name: Install LLVM/Clang
         shell: bash
@@ -83,20 +83,19 @@ jobs:
 
           wget -q https://apt.llvm.org/llvm.sh -O /tmp/llvm.sh
           chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh "${LLVM_VERSION}" all
+          sudo /tmp/llvm.sh "${LLVM_VERSION}"
 
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-"${LLVM_VERSION}" 100
-          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-"${LLVM_VERSION}" 100
-          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-"${LLVM_VERSION}" 100
-          sudo update-alternatives --install /usr/bin/llvm-ar llvm-ar /usr/bin/llvm-ar-"${LLVM_VERSION}" 100
-          sudo update-alternatives --install /usr/bin/llvm-nm llvm-nm /usr/bin/llvm-nm-"${LLVM_VERSION}" 100
-          sudo update-alternatives --install /usr/bin/llvm-objcopy llvm-objcopy /usr/bin/llvm-objcopy-"${LLVM_VERSION}" 100
-          sudo update-alternatives --install /usr/bin/llvm-objdump llvm-objdump /usr/bin/llvm-objdump-"${LLVM_VERSION}" 100
-          sudo update-alternatives --install /usr/bin/llvm-readelf llvm-readelf /usr/bin/llvm-readelf-"${LLVM_VERSION}" 100
-          sudo update-alternatives --install /usr/bin/llvm-strip llvm-strip /usr/bin/llvm-strip-"${LLVM_VERSION}" 100
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-"${LLVM_VERSION}" \
+            lld-"${LLVM_VERSION}" \
+            llvm-"${LLVM_VERSION}" \
+            llvm-"${LLVM_VERSION}"-tools
 
-          clang --version
-          ld.lld --version
+          echo "== Toolchain check =="
+          /usr/lib/llvm-"${LLVM_VERSION}"/bin/clang --version
+          /usr/lib/llvm-"${LLVM_VERSION}"/bin/ld.lld --version
+          /usr/lib/llvm-"${LLVM_VERSION}"/bin/llvm-ar --version | head -1
 
       - name: Checkout Droidspaces for non-GKI patches
         uses: actions/checkout@v4
@@ -106,12 +105,15 @@ jobs:
           path: Droidspaces-OSS
           fetch-depth: 1
 
-      - name: Apply Droidspaces non-GKI patches
+      - name: Apply Droidspaces non-GKI patches safely
         shell: bash
         run: |
           set -euo pipefail
 
           PATCH_DIR="Droidspaces-OSS/Documentation/resources/kernel-patches/non-GKI"
+
+          echo "== Droidspaces commit =="
+          git -C Droidspaces-OSS log --oneline -1 | tee droidspaces-ref.txt
 
           echo "== Droidspaces patches =="
           find "$PATCH_DIR" -type f -name "*.patch" -print | sort | tee patches-list.txt
@@ -121,6 +123,33 @@ jobs:
 
           while IFS= read -r patch_file; do
             echo "---- ${patch_file} ----" | tee -a patch_apply.log
+
+            # Detect target files from patch
+            mapfile -t targets < <(
+              grep -E '^\+\+\+ b/|^--- a/' "$patch_file" \
+                | sed -E 's#^\+\+\+ b/##; s#^--- a/##' \
+                | grep -v '^/dev/null$' \
+                | sort -u
+            )
+
+            missing_count=0
+            existing_count=0
+
+            for target in "${targets[@]}"; do
+              if [ -f "$target" ]; then
+                existing_count=$((existing_count + 1))
+              else
+                missing_count=$((missing_count + 1))
+                echo "Target missing: $target" | tee -a patch_apply.log
+              fi
+            done
+
+            # If all targets are missing, skip as N/A.
+            # This is expected for xt_qtaguid on trees that don't ship that file.
+            if [ "${existing_count}" -eq 0 ]; then
+              echo "SKIP: no target files exist for this patch. Marking as N/A." | tee -a patch_apply.log
+              continue
+            fi
 
             if patch --dry-run -p1 < "$patch_file" > /tmp/patch_dryrun.log 2>&1; then
               patch -p1 < "$patch_file" 2>&1 | tee -a patch_apply.log
@@ -154,8 +183,6 @@ jobs:
           set -euo pipefail
 
           cat > configs/droidspaces_official_mandatory.config <<'EOF'
-          # Droidspaces official mandatory configs for non-GKI legacy 4.19
-
           CONFIG_SYSCTL=y
           CONFIG_SYSVIPC=y
           CONFIG_POSIX_MQUEUE=y
@@ -221,8 +248,6 @@ jobs:
           echo "== Use original_boot.config as base =="
           cp configs/original_boot.config "${OUT_DIR}/.config"
 
-          echo "== Apply Droidspaces configs with scripts/config =="
-
           if [ "${{ inputs.build_variant }}" = "official-mandatory" ]; then
             FRAGMENT="configs/droidspaces_official_mandatory.config"
           else
@@ -252,9 +277,11 @@ jobs:
           scripts/config --file "${OUT_DIR}/.config" --disable KSU_WITH_KPROBES || true
           scripts/config --file "${OUT_DIR}/.config" --disable KSU_KPROBES_HOOK || true
 
-          echo "== Important: do not force appended DTB =="
+          echo "== Important: keep boot.img DTB separated =="
           scripts/config --file "${OUT_DIR}/.config" --disable BUILD_ARM64_APPENDED_DTB_IMAGE || true
           scripts/config --file "${OUT_DIR}/.config" --disable BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES || true
+
+          export PATH="/usr/lib/llvm-${{ inputs.llvm_version }}/bin:${PATH}"
 
           make O="${OUT_DIR}" ARCH=arm64 olddefconfig 2>&1 | tee olddefconfig.log
 
@@ -332,6 +359,14 @@ jobs:
         run: |
           set -euo pipefail
 
+          export PATH="/usr/lib/llvm-${{ inputs.llvm_version }}/bin:${PATH}"
+
+          echo "== Toolchain actually used =="
+          which clang
+          clang --version
+          which ld.lld
+          ld.lld --version
+
           make O="${OUT_DIR}" \
             ARCH=arm64 \
             CC=clang \
@@ -362,6 +397,7 @@ jobs:
           sha256sum Image* | tee image-sha256.txt
 
       - name: Upload kernel artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: rubyx-droidspaces-kernel-${{ inputs.build_variant }}
@@ -375,5 +411,18 @@ jobs:
             olddefconfig.log
             patch_apply.log
             patches-list.txt
+            droidspaces-ref.txt
             image-sha256.txt
+          if-no-files-found: ignore
+
+      - name: Upload debug logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rubyx-droidspaces-debug-failure
+          path: |
+            *.log
+            *.txt
+            final.config
+            out/.config
           if-no-files-found: ignore
