@@ -82,21 +82,19 @@ jobs:
           echo "== Disk after cleanup =="
           df -h || true
 
-      - name: Create swap for LTO build
+      - name: Keep existing swap
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "== Memory before swap =="
+          echo "== Memory and swap =="
           free -h || true
           swapon --show || true
 
-          echo "== Existing swap status =="
           if swapon --show | grep -q '/swapfile'; then
             echo "/swapfile is already active. Keeping existing swap."
           else
-            echo "/swapfile is not active. Creating extra swap."
-
+            echo "No active /swapfile found. Creating /mnt/kernel-build-swapfile."
             SWAPFILE="/mnt/kernel-build-swapfile"
 
             if swapon --show | grep -q "$SWAPFILE"; then
@@ -110,7 +108,7 @@ jobs:
             fi
           fi
 
-          echo "== Memory after swap =="
+          echo "== Memory after swap check =="
           free -h || true
           swapon --show || true
 
@@ -288,12 +286,31 @@ jobs:
           # CONFIG_ANDROID_PARANOID_NETWORK is not set
           EOF
 
-      - name: Configure kernel from extracted stock config with ThinLTO/CFI
+      - name: Configure kernel from extracted stock config with Clang ThinLTO CFI
         shell: bash
         run: |
           set -euo pipefail
 
           mkdir -p "${OUT_DIR}"
+
+          export PATH="/usr/lib/llvm-${{ inputs.llvm_version }}/bin:${PATH}"
+
+          MAKE_COMMON=(
+            O="${OUT_DIR}"
+            ARCH=arm64
+            CC=clang
+            LD=ld.lld
+            AR=llvm-ar
+            NM=llvm-nm
+            OBJCOPY=llvm-objcopy
+            OBJDUMP=llvm-objdump
+            STRIP=llvm-strip
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            CLANG_TRIPLE=aarch64-linux-gnu-
+            LLVM=1
+            LLVM_IAS=1
+          )
 
           echo "== Use original_boot.config as base =="
           cp configs/original_boot.config "${OUT_DIR}/.config"
@@ -332,31 +349,35 @@ jobs:
           scripts/config --file "${OUT_DIR}/.config" --disable BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES || true
 
           echo "== Force stock-like ThinLTO/CFI before olddefconfig =="
+          scripts/config --file "${OUT_DIR}/.config" --enable LTO || true
           scripts/config --file "${OUT_DIR}/.config" --enable LTO_CLANG || true
           scripts/config --file "${OUT_DIR}/.config" --enable THINLTO || true
+          scripts/config --file "${OUT_DIR}/.config" --enable CFI || true
           scripts/config --file "${OUT_DIR}/.config" --enable CFI_CLANG || true
-
-          # Keep full LTO disabled if this symbol exists, because we want ThinLTO
+          scripts/config --file "${OUT_DIR}/.config" --enable CFI_CLANG_SHADOW || true
+          scripts/config --file "${OUT_DIR}/.config" --disable CFI_PERMISSIVE || true
           scripts/config --file "${OUT_DIR}/.config" --disable LTO_NONE || true
 
-          export PATH="/usr/lib/llvm-${{ inputs.llvm_version }}/bin:${PATH}"
-
-          echo "== First olddefconfig =="
-          make O="${OUT_DIR}" ARCH=arm64 olddefconfig < /dev/null 2>&1 | tee olddefconfig-pass1.log
+          echo "== First olddefconfig using Clang/LLVM =="
+          make "${MAKE_COMMON[@]}" olddefconfig < /dev/null 2>&1 | tee olddefconfig-pass1.log
 
           echo "== Force ThinLTO/CFI again after olddefconfig =="
+          scripts/config --file "${OUT_DIR}/.config" --enable LTO || true
           scripts/config --file "${OUT_DIR}/.config" --enable LTO_CLANG || true
           scripts/config --file "${OUT_DIR}/.config" --enable THINLTO || true
+          scripts/config --file "${OUT_DIR}/.config" --enable CFI || true
           scripts/config --file "${OUT_DIR}/.config" --enable CFI_CLANG || true
+          scripts/config --file "${OUT_DIR}/.config" --enable CFI_CLANG_SHADOW || true
+          scripts/config --file "${OUT_DIR}/.config" --disable CFI_PERMISSIVE || true
           scripts/config --file "${OUT_DIR}/.config" --disable LTO_NONE || true
 
-          echo "== Second olddefconfig after forcing ThinLTO/CFI =="
-          make O="${OUT_DIR}" ARCH=arm64 olddefconfig < /dev/null 2>&1 | tee olddefconfig-pass2.log
+          echo "== Second olddefconfig using Clang/LLVM =="
+          make "${MAKE_COMMON[@]}" olddefconfig < /dev/null 2>&1 | tee olddefconfig-pass2.log
 
           cp "${OUT_DIR}/.config" final.config
 
           echo "== Final LTO/CFI state =="
-          grep -E "CONFIG_LTO|CONFIG_THINLTO|CONFIG_CFI" final.config | tee lto-cfi-check.txt || true
+          grep -E "CONFIG_LTO|CONFIG_THINLTO|CONFIG_CFI|CONFIG_CC_IS_CLANG|CONFIG_LD_IS_LLD" final.config | tee lto-cfi-check.txt || true
 
       - name: Validate final config
         shell: bash
@@ -402,9 +423,12 @@ jobs:
           echo "== ThinLTO/CFI check ==" | tee -a config-check.txt
 
           LTO_REQUIRED="
+          CONFIG_LTO
           CONFIG_LTO_CLANG
           CONFIG_THINLTO
+          CONFIG_CFI
           CONFIG_CFI_CLANG
+          CONFIG_CFI_CLANG_SHADOW
           "
 
           for cfg in $LTO_REQUIRED; do
@@ -422,6 +446,11 @@ jobs:
           else
             echo "OK: CONFIG_LTO_NONE is not enabled" | tee -a config-check.txt
           fi
+
+          echo "" | tee -a config-check.txt
+          echo "== Toolchain Kconfig check ==" | tee -a config-check.txt
+
+          grep -E "CONFIG_CC_IS_CLANG|CONFIG_LD_IS_LLD|CONFIG_CLANG_VERSION|CONFIG_LLD_VERSION" "$CONFIG_FILE" | tee -a config-check.txt || true
 
           echo "" | tee -a config-check.txt
           echo "== Clean kernel check ==" | tee -a config-check.txt
@@ -484,7 +513,7 @@ jobs:
           echo "KCFLAGS_COMMON=${KCFLAGS_COMMON}"
 
           echo "== Final config LTO/CFI before build =="
-          grep -E "CONFIG_LTO|CONFIG_THINLTO|CONFIG_CFI" "${OUT_DIR}/.config" || true
+          grep -E "CONFIG_LTO|CONFIG_THINLTO|CONFIG_CFI|CONFIG_CC_IS_CLANG|CONFIG_LD_IS_LLD" "${OUT_DIR}/.config" || true
 
           echo "== Build kernel with reduced parallelism for ThinLTO =="
           make O="${OUT_DIR}" \
