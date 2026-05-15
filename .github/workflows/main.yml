@@ -89,11 +89,26 @@ jobs:
 
           echo "== Memory before swap =="
           free -h || true
+          swapon --show || true
 
-          sudo fallocate -l 8G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          echo "== Existing swap status =="
+          if swapon --show | grep -q '/swapfile'; then
+            echo "/swapfile is already active. Keeping existing swap."
+          else
+            echo "/swapfile is not active. Creating extra swap."
+
+            SWAPFILE="/mnt/kernel-build-swapfile"
+
+            if swapon --show | grep -q "$SWAPFILE"; then
+              echo "$SWAPFILE already active."
+            else
+              sudo rm -f "$SWAPFILE" || true
+              sudo fallocate -l 8G "$SWAPFILE" || sudo dd if=/dev/zero of="$SWAPFILE" bs=1M count=8192
+              sudo chmod 600 "$SWAPFILE"
+              sudo mkswap "$SWAPFILE"
+              sudo swapon "$SWAPFILE"
+            fi
+          fi
 
           echo "== Memory after swap =="
           free -h || true
