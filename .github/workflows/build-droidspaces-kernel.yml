@@ -182,6 +182,9 @@ jobs:
 
           mkdir -p installer_base/tools
           mkdir -p installer_base/META-INF/com/google/android
+          mkdir -p installer_base/ramdisk
+          mkdir -p installer_base/patch
+          mkdir -p installer_base/modules/system/lib/modules
 
           cp "$AK3_CORE" installer_base/tools/ak3-core.sh
           cp "$MAGISKBOOT" installer_base/tools/magiskboot
@@ -189,12 +192,17 @@ jobs:
           cp "$UPDATE_BINARY" installer_base/META-INF/com/google/android/update-binary
           cp "$UPDATER_SCRIPT" installer_base/META-INF/com/google/android/updater-script
 
+          touch installer_base/ramdisk/placeholder
+          touch installer_base/patch/placeholder
+          touch installer_base/modules/system/lib/modules/placeholder
+
+          chmod +x installer_base/tools/ak3-core.sh || true
           chmod +x installer_base/tools/magiskboot || true
           chmod +x installer_base/tools/busybox || true
           chmod +x installer_base/META-INF/com/google/android/update-binary || true
 
           echo "== Minimal installer_base =="
-          find installer_base -maxdepth 5 -type f -print -exec ls -lh {} \; | tee reference/aeron/installer-base-files.txt
+          find installer_base -maxdepth 6 -type f -print -exec ls -lh {} \; | tee reference/aeron/installer-base-files.txt
 
       - name: Install AOSP Clang 21.0.0 r563880
         shell: bash
@@ -203,12 +211,45 @@ jobs:
 
           mkdir -p toolchains
 
-          echo "== Clone AOSP Clang 21.0.0 r563880 prebuilt =="
-          git clone --depth=1 \
-            https://github.com/XDL-MoonWake/linux-x86-clang-21.0.0-r563880 \
-            toolchains/clang-aosp-21
+          echo "== Download AOSP Clang 21.0.0 r563880 prebuilt =="
+          CLANG_DIR="$PWD/toolchains/clang-aosp-21"
 
-          export PATH="$PWD/toolchains/clang-aosp-21/bin:$PATH"
+          rm -rf "$CLANG_DIR"
+
+          URLS=(
+            "https://github.com/XDL-MoonWake/linux-x86-clang-21.0.0-r563880/archive/refs/heads/main.tar.gz"
+            "https://github.com/DPR-MoonWake/linux-x86-clang-21.0.0-r563880/archive/refs/heads/main.tar.gz"
+          )
+
+          OK=0
+
+          for URL in "${URLS[@]}"; do
+            echo "Trying: $URL"
+
+            rm -rf "$CLANG_DIR" toolchains/clang-download.tar.gz toolchains/clang-extract
+            mkdir -p toolchains
+
+            if curl -L --fail --retry 3 --retry-delay 5 "$URL" -o toolchains/clang-download.tar.gz; then
+              mkdir -p toolchains/clang-extract
+
+              if tar -xzf toolchains/clang-download.tar.gz -C toolchains/clang-extract --strip-components=1; then
+                mv toolchains/clang-extract "$CLANG_DIR"
+                OK=1
+                break
+              fi
+            fi
+          done
+
+          if [ "$OK" -ne 1 ]; then
+            echo "ERROR: Could not download AOSP Clang r563880 from any mirror."
+            exit 1
+          fi
+
+          export PATH="$CLANG_DIR/bin:$PATH"
+
+          echo "== Toolchain files =="
+          ls -lah "$CLANG_DIR" | head
+          ls -lah "$CLANG_DIR/bin" | head
 
           echo "== Toolchain check =="
           which clang
@@ -218,12 +259,16 @@ jobs:
           which llvm-ar
           llvm-ar --version | head -1 || true
 
+          echo "== Save toolchain path =="
+          echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
+          echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
+
       - name: Configure kernel from stock config with Droidspaces core
         shell: bash
         run: |
           set -euo pipefail
 
-          export PATH="$PWD/toolchains/clang-aosp-21/bin:$PATH"
+          export PATH="${CLANG_DIR}/bin:$PATH"
 
           mkdir -p "${OUT_DIR}"
 
@@ -423,7 +468,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          export PATH="$PWD/toolchains/clang-aosp-21/bin:$PATH"
+          export PATH="${CLANG_DIR}/bin:$PATH"
           export LLVM_DISABLE_CRASH_REPORT=1
 
           echo "== Build toolchain =="
@@ -583,6 +628,7 @@ jobs:
             cp Image.gz installer_base/Image.gz
           fi
 
+          chmod +x installer_base/tools/ak3-core.sh || true
           chmod +x installer_base/tools/busybox || true
           chmod +x installer_base/tools/magiskboot || true
           chmod +x installer_base/META-INF/com/google/android/update-binary || true
@@ -592,10 +638,7 @@ jobs:
           cd installer_base
           zip -r9 "../${ZIP_NAME}" . \
             -x ".git/*" \
-            -x "*.bak" \
-            -x "*placeholder*" \
-            -x "README.md" \
-            -x "LICENSE"
+            -x "*.bak"
           cd ..
 
           echo "== Zip info =="
