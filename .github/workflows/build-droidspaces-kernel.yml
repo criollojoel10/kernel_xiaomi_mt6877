@@ -149,14 +149,12 @@ jobs:
                 | sort -u
             )
 
-            missing_count=0
             existing_count=0
 
             for target in "${targets[@]}"; do
               if [ -f "$target" ]; then
                 existing_count=$((existing_count + 1))
               else
-                missing_count=$((missing_count + 1))
                 echo "Target missing: $target" | tee -a patch_apply.log
               fi
             done
@@ -301,7 +299,7 @@ jobs:
           export PATH="/usr/lib/llvm-${{ inputs.llvm_version }}/bin:${PATH}"
 
           echo "== Run olddefconfig non-interactively =="
-          yes "" | make O="${OUT_DIR}" ARCH=arm64 olddefconfig 2>&1 | tee olddefconfig.log
+          make O="${OUT_DIR}" ARCH=arm64 olddefconfig < /dev/null 2>&1 | tee olddefconfig.log
 
           cp "${OUT_DIR}/.config" final.config
 
@@ -454,6 +452,7 @@ jobs:
             droidspaces-ref.txt
             image-sha256.txt
           if-no-files-found: ignore
+          include-hidden-files: true
 
       - name: Upload debug logs on failure
         if: failure()
@@ -466,3 +465,4 @@ jobs:
             final.config
             out/.config
           if-no-files-found: ignore
+          include-hidden-files: true
