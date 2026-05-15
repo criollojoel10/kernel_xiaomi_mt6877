@@ -1,54 +1,35 @@
-name: Build Droidspaces AnyKernel Zip From Aeron Base
+name: Build DroidSpaces Stock Kernel
 
 on:
   workflow_dispatch:
-    inputs:
-      kernel_ref:
-        description: "Kernel branch/ref"
-        required: true
-        default: "droidspaces-stock"
+  push:
+    branches:
+      - droidspaces-stock
 
-      package_format:
-        description: "Kernel file inside AnyKernel zip"
-        required: true
-        default: "Image.gz"
-        type: choice
-        options:
-          - Image.gz
-          - Image.gz-dtb
+permissions:
+  contents: read
 
-      enable_nftables:
-        description: "Enable CONFIG_NF_TABLES"
-        required: true
-        default: false
-        type: boolean
-
-      jobs:
-        description: "Make parallel jobs"
-        required: true
-        default: "4"
+env:
+  ARCH: arm64
+  SUBARCH: arm64
+  OUT_DIR: out
+  AERON_REPO: XDL-MoonWake/aeron_kernel_xiaomi_ruby
+  AERON_TAG: "1.0.2"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 360
-
-    env:
-      ARCH: arm64
-      SUBARCH: arm64
-      OUT_DIR: out
-      AERON_REPO: XDL-MoonWake/aeron_kernel_xiaomi_ruby
-      AERON_TAG: 1.0.2
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    timeout-minutes: 180
 
     steps:
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.kernel_ref }}
+          ref: droidspaces-stock
           fetch-depth: 1
 
-      - name: Source sanity check
+      - name: Preflight checks
         shell: bash
         run: |
           set -euo pipefail
@@ -56,12 +37,12 @@ jobs:
           echo "== Git HEAD =="
           git log --oneline -1 || true
 
-          echo "== Required config files =="
+          echo "== Required files =="
           test -f Makefile
           test -f configs/original_boot.config
           test -f configs/droidspaces_core.config
 
-          echo "== Check unwanted KSU/SUSFS references in our source =="
+          echo "== Check unwanted KSU/SUSFS references =="
           set +e
           grep -R "CONFIG_KSU\|KernelSU\|SUSFS\|CONFIG_KSU_SUSFS" \
             Kconfig fs kernel security arch/arm64/configs 2>/dev/null > ksu-susfs-grep.txt
@@ -69,17 +50,16 @@ jobs:
           set -e
 
           if [ "$GREP_RC" -eq 0 ]; then
-            echo "WARNING: KSU/SUSFS references found in source tree."
+            echo "WARNING: KSU/SUSFS references found:"
             head -80 ksu-susfs-grep.txt || true
-            echo "Review this if this branch must be 100% clean."
           else
             echo "OK: no obvious KSU/SUSFS references found."
           fi
 
-          echo "== Stock LTO/CFI state from original_boot.config =="
+          echo "== Stock LTO/CFI state =="
           grep -E "CONFIG_LTO|CONFIG_THINLTO|CONFIG_CFI" configs/original_boot.config || true
 
-      - name: Cleanup runner disk space
+      - name: Free disk space
         shell: bash
         run: |
           set -euo pipefail
@@ -96,7 +76,7 @@ jobs:
           echo "== Disk after cleanup =="
           df -h || true
 
-      - name: Check memory and swap
+      - name: Ensure swap
         shell: bash
         run: |
           set -euo pipefail
@@ -108,25 +88,20 @@ jobs:
           if swapon --show | grep -q '/swapfile'; then
             echo "/swapfile already active. Keeping existing swap."
           else
-            echo "No /swapfile active. Creating /mnt/kernel-build-swapfile."
             SWAPFILE="/mnt/kernel-build-swapfile"
-
-            if swapon --show | grep -q "$SWAPFILE"; then
-              echo "$SWAPFILE already active."
-            else
-              sudo rm -f "$SWAPFILE" || true
-              sudo fallocate -l 8G "$SWAPFILE" || sudo dd if=/dev/zero of="$SWAPFILE" bs=1M count=8192
-              sudo chmod 600 "$SWAPFILE"
-              sudo mkswap "$SWAPFILE"
-              sudo swapon "$SWAPFILE"
-            fi
+            echo "Creating $SWAPFILE"
+            sudo rm -f "$SWAPFILE" || true
+            sudo fallocate -l 8G "$SWAPFILE" || sudo dd if=/dev/zero of="$SWAPFILE" bs=1M count=8192
+            sudo chmod 600 "$SWAPFILE"
+            sudo mkswap "$SWAPFILE"
+            sudo swapon "$SWAPFILE"
           fi
 
           echo "== Memory after swap check =="
           free -h || true
           swapon --show || true
 
-      - name: Install base dependencies
+      - name: Install build dependencies
         shell: bash
         run: |
           set -euo pipefail
@@ -139,7 +114,7 @@ jobs:
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
             lz4 zstd xz-utils ca-certificates
 
-      - name: Download Aeron Phoenix installer base
+      - name: Download Aeron AnyKernel3 base
         shell: bash
         run: |
           set -euo pipefail
@@ -174,7 +149,7 @@ jobs:
           echo "== Aeron file list =="
           find reference/aeron/unpacked -maxdepth 5 -type f | sort | tee reference/aeron/aeron-files.txt
 
-          echo "== Extract minimal AnyKernel3 base from Aeron =="
+          echo "== Extract minimal AnyKernel3 base =="
           AK3_CORE="$(find reference/aeron/unpacked -type f -path "*/tools/ak3-core.sh" | head -1 || true)"
           MAGISKBOOT="$(find reference/aeron/unpacked -type f -path "*/tools/magiskboot" | head -1 || true)"
           BUSYBOX="$(find reference/aeron/unpacked -type f -path "*/tools/busybox" | head -1 || true)"
@@ -211,15 +186,13 @@ jobs:
           echo "== Minimal installer_base =="
           find installer_base -maxdepth 6 -type f -print -exec ls -lh {} \; | tee reference/aeron/installer-base-files.txt
 
-      - name: Install AOSP Clang 21.0.0 r563880
+      - name: Install official AOSP Clang r563880
         shell: bash
-        timeout-minutes: 60
         run: |
           set -euo pipefail
 
           mkdir -p toolchains
 
-          echo "== Install official AOSP Clang r563880 via git sparse checkout =="
           CLANG_DIR="$PWD/toolchains/clang-aosp-21"
           AOSP_CLANG_REPO="$PWD/toolchains/aosp-clang-repo"
           AOSP_CLANG_COMMIT="6f88d37dd82ba741ca279539d44bb7da27ab1844"
@@ -228,23 +201,20 @@ jobs:
           rm -rf "$CLANG_DIR" "$AOSP_CLANG_REPO"
           mkdir -p "$AOSP_CLANG_REPO"
 
-          echo "Repo:   $AOSP_CLANG_URL"
+          echo "Repo: $AOSP_CLANG_URL"
           echo "Commit: $AOSP_CLANG_COMMIT"
-          echo "Path:   clang-r563880"
+          echo "Path: clang-r563880"
 
           cd "$AOSP_CLANG_REPO"
 
           git init
           git remote add origin "$AOSP_CLANG_URL"
-
           git config core.sparseCheckout true
           git config core.sparseCheckoutCone true
           git sparse-checkout init --cone
           git sparse-checkout set clang-r563880
 
-          echo "== Fetch pinned AOSP clang commit =="
           FETCH_OK=0
-
           for i in 1 2 3; do
             echo "Fetch attempt $i/3"
             if git fetch --depth=1 --filter=blob:none origin "$AOSP_CLANG_COMMIT"; then
@@ -259,7 +229,6 @@ jobs:
             exit 1
           fi
 
-          echo "== Checkout clang-r563880 only =="
           git checkout FETCH_HEAD
 
           cd "$GITHUB_WORKSPACE"
@@ -274,15 +243,6 @@ jobs:
 
           export PATH="$CLANG_DIR/bin:$PATH"
 
-          echo "== Toolchain files =="
-          ls -lah "$CLANG_DIR" | head -50
-          ls -lah "$CLANG_DIR/bin" | head -80
-
-          echo "== Metadata =="
-          cat "$CLANG_DIR/AndroidVersion.txt" || true
-          cat "$CLANG_DIR/BUILD_INFO" | head -120 || true
-          cat "$CLANG_DIR/clang_source_info.md" || true
-
           echo "== Toolchain check =="
           which clang
           clang --version
@@ -291,7 +251,6 @@ jobs:
           which llvm-ar
           llvm-ar --version | head -1 || true
 
-          echo "== Validate expected toolchain =="
           clang --version | tee clang-version.txt
 
           if ! clang --version | grep -q "21.0.0"; then
@@ -304,11 +263,43 @@ jobs:
             exit 1
           fi
 
-          echo "== Save toolchain path =="
           echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
           echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
 
-      - name: Configure kernel from stock config with Droidspaces core
+      - name: Patch unsupported Clang warning flags
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "== Search unsupported warning flags before patch =="
+          grep -RIn \
+            -e "default-const-init-var-unsafe" \
+            --exclude-dir=.git \
+            --exclude-dir=out \
+            . | tee unsupported-warning-flags-before.txt || true
+
+          echo "== Remove unsupported warning flags =="
+          while IFS= read -r -d '' f; do
+            perl -0pi -e 's/\s*-Werror=default-const-init-var-unsafe//g;
+                         s/\s*-Wno-error=default-const-init-var-unsafe//g;
+                         s/\s*-Wdefault-const-init-var-unsafe//g;
+                         s/\s*-Wno-default-const-init-var-unsafe//g;' "$f"
+          done < <(
+            grep -RIlZ \
+              -e "default-const-init-var-unsafe" \
+              --exclude-dir=.git \
+              --exclude-dir=out \
+              . || true
+          )
+
+          echo "== Search unsupported warning flags after patch =="
+          grep -RIn \
+            -e "default-const-init-var-unsafe" \
+            --exclude-dir=.git \
+            --exclude-dir=out \
+            . | tee unsupported-warning-flags-after.txt || true
+
+      - name: Configure kernel
         shell: bash
         run: |
           set -euo pipefail
@@ -352,13 +343,12 @@ jobs:
             fi
           done < configs/droidspaces_core.config
 
-          echo "== Force clean: disable KSU/SUSFS =="
+          echo "== Force clean options =="
           scripts/config --file "${OUT_DIR}/.config" --disable KSU || true
           scripts/config --file "${OUT_DIR}/.config" --disable KSU_SUSFS || true
           scripts/config --file "${OUT_DIR}/.config" --disable KSU_WITH_KPROBES || true
           scripts/config --file "${OUT_DIR}/.config" --disable KSU_KPROBES_HOOK || true
 
-          echo "== Do not force appended DTB from Kconfig =="
           scripts/config --file "${OUT_DIR}/.config" --disable BUILD_ARM64_APPENDED_DTB_IMAGE || true
           scripts/config --file "${OUT_DIR}/.config" --disable BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES || true
 
@@ -372,17 +362,11 @@ jobs:
           scripts/config --file "${OUT_DIR}/.config" --disable LTO_NONE || true
           scripts/config --file "${OUT_DIR}/.config" --disable CFI_PERMISSIVE || true
 
-          echo "== Handle NF_TABLES =="
-          if [ "${{ inputs.enable_nftables }}" = "true" ]; then
-            scripts/config --file "${OUT_DIR}/.config" --enable NF_TABLES || true
-          else
-            scripts/config --file "${OUT_DIR}/.config" --disable NF_TABLES || true
-          fi
-
-          echo "== Disable Android paranoid network =="
+          echo "== Networking/container options =="
+          scripts/config --file "${OUT_DIR}/.config" --disable NF_TABLES || true
           scripts/config --file "${OUT_DIR}/.config" --disable ANDROID_PARANOID_NETWORK || true
 
-          echo "== First olddefconfig with AOSP Clang =="
+          echo "== First olddefconfig =="
           make "${MAKE_COMMON[@]}" olddefconfig < /dev/null 2>&1 | tee olddefconfig-pass1.log
 
           echo "== Re-force important options after olddefconfig =="
@@ -412,14 +396,9 @@ jobs:
           scripts/config --file "${OUT_DIR}/.config" --disable KSU_SUSFS || true
           scripts/config --file "${OUT_DIR}/.config" --disable BUILD_ARM64_APPENDED_DTB_IMAGE || true
           scripts/config --file "${OUT_DIR}/.config" --disable BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES || true
+          scripts/config --file "${OUT_DIR}/.config" --disable NF_TABLES || true
 
-          if [ "${{ inputs.enable_nftables }}" = "true" ]; then
-            scripts/config --file "${OUT_DIR}/.config" --enable NF_TABLES || true
-          else
-            scripts/config --file "${OUT_DIR}/.config" --disable NF_TABLES || true
-          fi
-
-          echo "== Second olddefconfig with AOSP Clang =="
+          echo "== Second olddefconfig =="
           make "${MAKE_COMMON[@]}" olddefconfig < /dev/null 2>&1 | tee olddefconfig-pass2.log
 
           cp "${OUT_DIR}/.config" final.config
@@ -428,7 +407,7 @@ jobs:
           grep -E "CONFIG_LTO|CONFIG_THINLTO|CONFIG_CFI|CONFIG_CC_IS_CLANG|CONFIG_LD_IS_LLD|CONFIG_IPC_NS|CONFIG_DEVTMPFS|CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE|CONFIG_CGROUP_DEVICE|CONFIG_NF_TABLES|CONFIG_ANDROID_PARANOID_NETWORK|CONFIG_KSU|CONFIG_KSU_SUSFS|CONFIG_BUILD_ARM64_APPENDED_DTB" final.config \
             | tee final-important-config.txt || true
 
-      - name: Validate final config
+      - name: Validate kernel config
         shell: bash
         run: |
           set -euo pipefail
@@ -501,14 +480,15 @@ jobs:
           fi
 
           echo "== Toolchain Kconfig =="
-          grep -E "CONFIG_CC_IS_CLANG|CONFIG_LD_IS_LLD|CONFIG_CLANG_VERSION|CONFIG_LLD_VERSION" "$CONFIG_FILE" | tee -a config-check.txt || true
+          grep -E "CONFIG_CC_IS_CLANG|CONFIG_LD_IS_LLD|CONFIG_CLANG_VERSION|CONFIG_LLD_VERSION" "$CONFIG_FILE" \
+            | tee -a config-check.txt || true
 
           if [ "$FAILED" -ne 0 ]; then
             echo "ERROR: config validation failed"
             exit 1
           fi
 
-      - name: Build kernel with AOSP Clang
+      - name: Build kernel
         shell: bash
         run: |
           set -euo pipefail
@@ -527,10 +507,10 @@ jobs:
           df -h || true
           ulimit -n 8192 || true
 
-          MAKE_JOBS="${{ inputs.jobs }}"
+          MAKE_JOBS="4"
 
           echo "== Build with -j${MAKE_JOBS} =="
-          set +e
+
           make O="${OUT_DIR}" \
             ARCH=arm64 \
             CC=clang \
@@ -545,180 +525,93 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             LLVM=1 \
             LLVM_IAS=1 \
-            KCFLAGS="-Wno-error=default-const-init-var-unsafe -Wno-default-const-init-var-unsafe" \
-            -j"${MAKE_JOBS}" 2>&1 | tee build.log
-          BUILD_RC="${PIPESTATUS[0]}"
-          set -e
+            -j"${MAKE_JOBS}" \
+            Image.gz dtbs 2>&1 | tee build.log
 
-          if grep -q "LLVM ERROR" build.log; then
-            echo "ERROR: LLVM ERROR detected. Build is invalid."
-            exit 1
-          fi
-
-          if grep -q "Broken pipe" build.log; then
-            echo "ERROR: Broken pipe detected. Build is invalid."
-            exit 1
-          fi
-
-          if [ "$BUILD_RC" -ne 0 ]; then
-            echo "ERROR: make failed with rc=$BUILD_RC"
-            exit "$BUILD_RC"
-          fi
-
-      - name: Create kernel artifacts
+      - name: Collect build outputs
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
 
-          BOOT_DIR="${OUT_DIR}/arch/arm64/boot"
-          DTS_DIR="${BOOT_DIR}/dts/mediatek"
+          mkdir -p artifacts/logs
+          mkdir -p artifacts/kernel
 
-          echo "== Produced boot files =="
-          find "${BOOT_DIR}" -maxdepth 5 -type f \
-            \( -name "Image" -o -name "Image.gz" -o -name "Image.gz-dtb" -o -name "*.dtb" -o -name "*.dtbo" \) \
-            -print -exec ls -lh {} \; || true
+          cp -f clang-version.txt artifacts/logs/ || true
+          cp -f final.config artifacts/logs/ || true
+          cp -f final-important-config.txt artifacts/logs/ || true
+          cp -f config-check.txt artifacts/logs/ || true
+          cp -f olddefconfig-pass1.log artifacts/logs/ || true
+          cp -f olddefconfig-pass2.log artifacts/logs/ || true
+          cp -f build.log artifacts/logs/ || true
+          cp -f unsupported-warning-flags-before.txt artifacts/logs/ || true
+          cp -f unsupported-warning-flags-after.txt artifacts/logs/ || true
+          cp -f ksu-susfs-grep.txt artifacts/logs/ || true
 
-          test -f "${BOOT_DIR}/Image"
+          echo "== Find kernel images =="
+          find "${OUT_DIR}" -type f \( -name "Image" -o -name "Image.gz" -o -name "Image.gz-dtb" -o -name "*.dtb" \) \
+            -print | sort | tee artifacts/logs/kernel-output-files.txt || true
 
-          if [ ! -f "${BOOT_DIR}/Image.gz" ]; then
-            echo "Image.gz not found, compressing Image manually"
-            gzip -c "${BOOT_DIR}/Image" > "${BOOT_DIR}/Image.gz"
+          if [ -f "${OUT_DIR}/arch/arm64/boot/Image.gz" ]; then
+            cp "${OUT_DIR}/arch/arm64/boot/Image.gz" artifacts/kernel/Image.gz
           fi
 
-          test -f "${BOOT_DIR}/Image.gz"
-
-          DTB="$(find "${DTS_DIR}" -type f -name "mt6877*.dtb" | head -1 || true)"
-          DTBO="$(find "${DTS_DIR}" -type f -name "ruby*.dtbo" | head -1 || true)"
-
-          if [ -n "$DTB" ] && [ -f "$DTB" ]; then
-            cp "$DTB" ./mt6877.dtb
-          else
-            echo "WARNING: mt6877*.dtb not found"
+          if [ -f "${OUT_DIR}/arch/arm64/boot/Image" ]; then
+            cp "${OUT_DIR}/arch/arm64/boot/Image" artifacts/kernel/Image
           fi
 
-          if [ -n "$DTBO" ] && [ -f "$DTBO" ]; then
-            cp "$DTBO" ./ruby.dtbo
-          else
-            echo "WARNING: ruby*.dtbo not found"
+          if [ -f "${OUT_DIR}/arch/arm64/boot/Image.gz-dtb" ]; then
+            cp "${OUT_DIR}/arch/arm64/boot/Image.gz-dtb" artifacts/kernel/Image.gz-dtb
           fi
 
-          cp "${BOOT_DIR}/Image" ./Image
-          cp "${BOOT_DIR}/Image.gz" ./Image.gz
+          find "${OUT_DIR}/arch/arm64/boot/dts" -type f -name "*.dtb" -exec cp {} artifacts/kernel/ \; 2>/dev/null || true
 
-          if [ -f ./mt6877.dtb ] && [ -f ./ruby.dtbo ]; then
-            cat ./Image.gz ./mt6877.dtb ./ruby.dtbo > ./Image.gz-dtb
-          else
-            echo "Image.gz-dtb not created because DTB/DTBO missing"
-          fi
-
-          echo "== Final kernel artifacts =="
-          ls -lh Image Image.gz mt6877.dtb ruby.dtbo Image.gz-dtb 2>/dev/null || true
-          sha256sum Image Image.gz mt6877.dtb ruby.dtbo Image.gz-dtb 2>/dev/null | tee image-sha256.txt || true
-
-          echo "== Kernel strings =="
-          strings Image | grep -Ei "Linux version|clang version|LLD|KernelSU|SUSFS|Aeron" | head -120 \
-            | tee our-kernel-strings.txt || true
-
-          if [ -f Image.gz-dtb ]; then
-            strings Image.gz-dtb | grep -Ei "Linux version|clang version|LLD|KernelSU|SUSFS|Aeron" | head -120 \
-              | tee our-imagegzdtb-strings.txt || true
-          fi
-
-      - name: Create AnyKernel3 zip
+      - name: Package AnyKernel3 zip
         shell: bash
         run: |
           set -euo pipefail
 
-          PACKAGE_FORMAT="${{ inputs.package_format }}"
-
-          echo "== Prepare installer_base =="
-          rm -f installer_base/Image installer_base/Image.gz installer_base/Image.gz-dtb || true
-
-          cat > installer_base/anykernel.sh <<'EOF'
-          properties() { '
-          kernel.string=Droidspaces Kernel Ruby
-          do.devicecheck=0
-          do.modules=0
-          do.systemless=0
-          do.cleanup=1
-          do.cleanuponabort=0
-          supported.versions=
-          supported.patchlevels=
-          '; }
-
-          attributes() {
-            set_perm_recursive 0 0 755 644 $ramdisk/*;
-            set_perm_recursive 0 0 750 750 $ramdisk/init* $ramdisk/sbin;
-          }
-
-          block=boot;
-          is_slot_device=1;
-          ramdisk_compression=auto;
-          patch_vbmeta_flag=auto;
-
-          . tools/ak3-core.sh && attributes;
-          dump_boot;
-          write_boot;
-          EOF
-
-          if [ "$PACKAGE_FORMAT" = "Image.gz-dtb" ]; then
-            if [ ! -f Image.gz-dtb ]; then
-              echo "ERROR: package_format is Image.gz-dtb but Image.gz-dtb does not exist"
-              exit 1
-            fi
-            echo "Packaging Image.gz-dtb"
-            cp Image.gz-dtb installer_base/Image.gz-dtb
-          else
-            echo "Packaging Image.gz"
-            cp Image.gz installer_base/Image.gz
+          if [ ! -f artifacts/kernel/Image.gz ] && [ ! -f artifacts/kernel/Image.gz-dtb ]; then
+            echo "ERROR: No kernel Image.gz or Image.gz-dtb found. Build probably failed."
+            exit 1
           fi
 
-          chmod +x installer_base/tools/ak3-core.sh || true
-          chmod +x installer_base/tools/busybox || true
-          chmod +x installer_base/tools/magiskboot || true
-          chmod +x installer_base/META-INF/com/google/android/update-binary || true
+          rm -rf package
+          cp -a installer_base package
 
-          ZIP_NAME="Rubyx-Droidspaces-AOSPClang-${PACKAGE_FORMAT}-${GITHUB_RUN_NUMBER}.zip"
+          if [ -f artifacts/kernel/Image.gz-dtb ]; then
+            cp artifacts/kernel/Image.gz-dtb package/Image.gz-dtb
+          elif [ -f artifacts/kernel/Image.gz ]; then
+            cp artifacts/kernel/Image.gz package/Image.gz
+          fi
 
-          cd installer_base
-          zip -r9 "../${ZIP_NAME}" . \
-            -x ".git/*" \
-            -x "*.bak"
+          mkdir -p package/dtbs
+          cp artifacts/kernel/*.dtb package/dtbs/ 2>/dev/null || true
+
+          cd package
+          zip -r9 "../rubyx-droidspaces-aospclang-anykernel.zip" ./*
           cd ..
 
-          echo "== Zip info =="
-          ls -lh "${ZIP_NAME}"
-          unzip -l "${ZIP_NAME}" | tee anykernel-zip-list.txt
-          sha256sum "${ZIP_NAME}" | tee anykernel-zip.sha256
+          ls -lh rubyx-droidspaces-aospclang-anykernel.zip
+          sha256sum rubyx-droidspaces-aospclang-anykernel.zip | tee rubyx-droidspaces-aospclang-anykernel.zip.sha256
 
-      - name: Upload artifacts
+      - name: Upload logs
         if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rubyx-droidspaces-build-logs
+          path: |
+            artifacts/logs/**
+            reference/aeron/*.txt
+            reference/aeron/*.sha256
+            reference/aeron/release.json
+          if-no-files-found: ignore
+
+      - name: Upload AnyKernel3 zip
         uses: actions/upload-artifact@v4
         with:
           name: rubyx-droidspaces-aospclang-anykernel
           path: |
-            Image
-            Image.gz
-            Image.gz-dtb
-            mt6877.dtb
-            ruby.dtbo
-            Rubyx-Droidspaces-AOSPClang-*.zip
-            final.config
-            config-check.txt
-            final-important-config.txt
-            olddefconfig-pass1.log
-            olddefconfig-pass2.log
-            build.log
-            image-sha256.txt
-            anykernel-zip-list.txt
-            anykernel-zip.sha256
-            our-kernel-strings.txt
-            our-imagegzdtb-strings.txt
-            clang-version.txt
-            reference/aeron/aeron-url.txt
-            reference/aeron/aeron-zip.sha256
-            reference/aeron/aeron-files.txt
-            reference/aeron/installer-base-files.txt
-            ksu-susfs-grep.txt
-          if-no-files-found: ignore
-          include-hidden-files: true
+            rubyx-droidspaces-aospclang-anykernel.zip
+            rubyx-droidspaces-aospclang-anykernel.zip.sha256
+          if-no-files-found: error
