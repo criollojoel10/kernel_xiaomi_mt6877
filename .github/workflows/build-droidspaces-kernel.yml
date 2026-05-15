@@ -32,6 +32,7 @@ jobs:
       ARCH: arm64
       SUBARCH: arm64
       OUT_DIR: out
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout kernel source
@@ -60,6 +61,23 @@ jobs:
           else
             echo "OK: no obvious KSU/SUSFS references found."
           fi
+
+      - name: Cleanup runner disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "== Disk before cleanup =="
+          df -h || true
+
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get clean || true
+
+          echo "== Disk after cleanup =="
+          df -h || true
 
       - name: Install dependencies
         shell: bash
@@ -124,7 +142,6 @@ jobs:
           while IFS= read -r patch_file; do
             echo "---- ${patch_file} ----" | tee -a patch_apply.log
 
-            # Detect target files from patch
             mapfile -t targets < <(
               grep -E '^\+\+\+ b/|^--- a/' "$patch_file" \
                 | sed -E 's#^\+\+\+ b/##; s#^--- a/##' \
@@ -144,8 +161,6 @@ jobs:
               fi
             done
 
-            # If all targets are missing, skip as N/A.
-            # This is expected for xt_qtaguid on trees that don't ship that file.
             if [ "${existing_count}" -eq 0 ]; then
               echo "SKIP: no target files exist for this patch. Marking as N/A." | tee -a patch_apply.log
               continue
@@ -181,6 +196,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          mkdir -p configs
 
           cat > configs/droidspaces_official_mandatory.config <<'EOF'
           CONFIG_SYSCTL=y
@@ -283,7 +300,8 @@ jobs:
 
           export PATH="/usr/lib/llvm-${{ inputs.llvm_version }}/bin:${PATH}"
 
-          make O="${OUT_DIR}" ARCH=arm64 olddefconfig 2>&1 | tee olddefconfig.log
+          echo "== Run olddefconfig non-interactively =="
+          yes "" | make O="${OUT_DIR}" ARCH=arm64 olddefconfig 2>&1 | tee olddefconfig.log
 
           cp "${OUT_DIR}/.config" final.config
 
@@ -360,6 +378,7 @@ jobs:
           set -euo pipefail
 
           export PATH="/usr/lib/llvm-${{ inputs.llvm_version }}/bin:${PATH}"
+          export LLVM_DISABLE_CRASH_REPORT=1
 
           echo "== Toolchain actually used =="
           which clang
@@ -367,6 +386,26 @@ jobs:
           which ld.lld
           ld.lld --version
 
+          echo "== Runner resources before build =="
+          free -h || true
+          df -h || true
+          ulimit -a || true
+
+          echo "== Increase limits where possible =="
+          ulimit -n 8192 || true
+
+          echo "== Clang warning workaround =="
+          CLANG_MAJOR="$(clang --version | head -1 | grep -oE 'version [0-9]+' | awk '{print $2}' || echo 0)"
+
+          KCFLAGS_COMMON=""
+          if [ "$CLANG_MAJOR" -ge 21 ]; then
+            KCFLAGS_COMMON="-Wno-error=default-const-init-var-unsafe -Wno-default-const-init-var-unsafe"
+          fi
+
+          echo "CLANG_MAJOR=${CLANG_MAJOR}"
+          echo "KCFLAGS_COMMON=${KCFLAGS_COMMON}"
+
+          echo "== Build kernel with reduced parallelism =="
           make O="${OUT_DIR}" \
             ARCH=arm64 \
             CC=clang \
@@ -375,7 +414,8 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             LLVM=1 \
             LLVM_IAS=1 \
-            -j"$(nproc)" 2>&1 | tee build.log
+            KCFLAGS="${KCFLAGS_COMMON}" \
+            -j4 2>&1 | tee build.log
 
           echo "== Produced boot files =="
           find "${OUT_DIR}/arch/arm64/boot" -maxdepth 4 -type f \
