@@ -1,4 +1,4 @@
-name: Audit Build Rubyx + Aeron KSU SuSFS
+name: Audit Build Rubyx + Aeron/MoonWake KSU SuSFS
 
 on:
   workflow_dispatch:
@@ -18,8 +18,9 @@ on:
         required: true
         default: "ruby_defconfig"
         type: string
+
       aeron_repo:
-        description: "Repo Aeron que SI tiene KSU/SuSFS"
+        description: "Repo Aeron que tiene KSU/SuSFS"
         required: true
         default: "DXRN-MoonWake/aeron_kernel_xiaomi_ruby"
         type: string
@@ -28,11 +29,29 @@ on:
         required: true
         default: "ksu_susfs"
         type: string
-      aeron_base_branch:
-        description: "Branch Aeron base sin/antes de KSU para calcular delta limpio"
+
+      moonwake_repo:
+        description: "Repo MoonWake para auditoria comparativa de KSU/SuSFS"
         required: true
-        default: "lineage-23.0"
+        default: "DXRN-MoonWake/moonwake_kernel_xiaomi_ruby"
         type: string
+      moonwake_branch:
+        description: "Branch MoonWake a auditar"
+        required: true
+        default: "moon"
+        type: string
+
+      ksu_repo:
+        description: "Repo KernelSU/RKSU fallback si Aeron no trae drivers/kernelsu/Kconfig"
+        required: true
+        default: "DXRN-MoonWake/KernelSU"
+        type: string
+      ksu_branch:
+        description: "Branch del repo KernelSU/RKSU para kernel/setup.sh"
+        required: true
+        default: "main"
+        type: string
+
       aeron_zip_url:
         description: "ZIP oficial Aeron usado como base AnyKernel3"
         required: true
@@ -43,13 +62,19 @@ on:
         required: true
         default: "e34b549d6b7d0c07e7f2f060aba3ec204e01844391031e15fff934607f315c24"
         type: string
+
       output_suffix:
         description: "Sufijo del ZIP final"
         required: true
-        default: "AERON-KSU-SUSFS-AUDIT"
+        default: "AERON-MOONWAKE-KSU-SUSFS-AUDIT"
         type: string
       strict_ksu:
-        description: "Fallar si CONFIG_KSU no queda y"
+        description: "Fallar si CONFIG_KSU no queda activo"
+        required: true
+        default: true
+        type: boolean
+      strict_image_strings:
+        description: "Fallar si el Image no muestra strings/simbolos KSU/SuSFS"
         required: true
         default: true
         type: boolean
@@ -69,7 +94,7 @@ env:
 
 jobs:
   audit-build:
-    name: Audit + Build Aeron KSU/SuSFS on Rubyx base
+    name: Audit + Build Rubyx with Aeron/MoonWake KSU
     runs-on: ubuntu-22.04
     timeout-minutes: 240
 
@@ -78,7 +103,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p workspace artifacts/{logs,patches,zips,source,manifests,runtime,diagnostics} toolchains
+          mkdir -p workspace artifacts/{logs,patches,zips,source,manifests,runtime,diagnostics,moonwake,aeron} toolchains
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL || true
           sudo apt-get clean || true
           sudo apt-get update
@@ -123,19 +148,21 @@ jobs:
           fi
           "$CLANG_DIR/bin/clang" --version | tee artifacts/logs/01-clang-version.log
 
-      - name: Clone base kernel and Aeron references
+      - name: Clone base kernel, Aeron, and MoonWake references
         shell: bash
         env:
           KERNEL_REPO: ${{ inputs.kernel_repo }}
           KERNEL_BRANCH: ${{ inputs.kernel_branch }}
           AERON_REPO: ${{ inputs.aeron_repo }}
           AERON_KSU_BRANCH: ${{ inputs.aeron_ksu_branch }}
-          AERON_BASE_BRANCH: ${{ inputs.aeron_base_branch }}
+          MOONWAKE_REPO: ${{ inputs.moonwake_repo }}
+          MOONWAKE_BRANCH: ${{ inputs.moonwake_branch }}
         run: |
           set -euo pipefail
           cd workspace
           git clone --depth 1 --branch "$KERNEL_BRANCH" "https://github.com/${KERNEL_REPO}.git" kernel-src
           git clone --filter=blob:none "https://github.com/${AERON_REPO}.git" aeron-ref
+          git clone --filter=blob:none "https://github.com/${MOONWAKE_REPO}.git" moonwake-ref
 
           cd kernel-src
           git config user.name "github-actions"
@@ -150,91 +177,144 @@ jobs:
           find arch/arm64/configs -maxdepth 3 -type f -iname '*defconfig' | sort | tee ../../artifacts/logs/03-base-defconfigs.log
 
           cd ../aeron-ref
-          git fetch --depth 500 origin "$AERON_KSU_BRANCH" "$AERON_BASE_BRANCH"
+          git fetch --depth 500 origin "$AERON_KSU_BRANCH"
           git checkout -f "origin/${AERON_KSU_BRANCH}"
           {
             echo "AERON_REPO=$AERON_REPO"
             echo "AERON_KSU_BRANCH=$AERON_KSU_BRANCH"
-            echo "AERON_BASE_BRANCH=$AERON_BASE_BRANCH"
             git show -s --format='aeron_ksu_commit=%H%naeron_ksu_date=%cI%naeron_ksu_subject=%s' HEAD
-            git show -s --format='aeron_base_commit=%H%naeron_base_date=%cI%naeron_base_subject=%s' "origin/${AERON_BASE_BRANCH}" || true
-          } | tee ../../artifacts/logs/04-aeron-branch-info.log
-          git branch -r | sort | tee ../../artifacts/logs/05-aeron-remote-branches.log
-          git log --oneline --decorate --max-count=200 --grep='KSU\|KernelSU\|SuSFS\|susfs\|ksu\|umount\|selinux\|hook' --all \
-            | tee ../../artifacts/logs/06-aeron-related-commits.log || true
+          } | tee ../../artifacts/aeron/04-aeron-branch-info.log
+          git branch -r | sort | tee ../../artifacts/aeron/05-aeron-remote-branches.log
+          git log --oneline --decorate --max-count=300 --grep='KSU\|KernelSU\|SuSFS\|susfs\|ksu\|umount\|selinux\|hook\|manual' --all \
+            | tee ../../artifacts/aeron/06-aeron-related-commits.log || true
 
-      - name: Audit Aeron KSU/SuSFS source before integration
+          cd ../moonwake-ref
+          git fetch --depth 800 origin "$MOONWAKE_BRANCH"
+          git checkout -f "origin/${MOONWAKE_BRANCH}"
+          {
+            echo "MOONWAKE_REPO=$MOONWAKE_REPO"
+            echo "MOONWAKE_BRANCH=$MOONWAKE_BRANCH"
+            git show -s --format='moonwake_commit=%H%nmoonwake_date=%cI%nmoonwake_subject=%s' HEAD
+          } | tee ../../artifacts/moonwake/07-moonwake-branch-info.log
+          git branch -r | sort | tee ../../artifacts/moonwake/08-moonwake-remote-branches.log
+          git log --oneline --decorate --max-count=500 --grep='KSU\|KernelSU\|SuSFS\|susfs\|ksu\|sukisu\|rksu\|ksun\|manual\|hook\|uname\|selinux\|umount' --all \
+            | tee ../../artifacts/moonwake/09-moonwake-related-commits.log || true
+
+      - name: Audit Aeron and MoonWake KSU/SuSFS source layout
         shell: bash
-        env:
-          AERON_KSU_BRANCH: ${{ inputs.aeron_ksu_branch }}
-          AERON_BASE_BRANCH: ${{ inputs.aeron_base_branch }}
         run: |
           set -euo pipefail
-          cd workspace/aeron-ref
-          echo "== Aeron KSU/SuSFS inventory ==" | tee ../../artifacts/logs/07-aeron-ksu-susfs-inventory.log
-          for p in drivers/kernelsu KernelSU kernel fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h include/uapi/linux/susfs.h; do
-            if [ -e "$p" ]; then
-              echo "FOUND $p" | tee -a ../../artifacts/logs/07-aeron-ksu-susfs-inventory.log
-              find "$p" -maxdepth 3 -type f 2>/dev/null | sort | tee -a ../../artifacts/logs/07-aeron-ksu-susfs-inventory.log || true
-            else
-              echo "MISSING $p" | tee -a ../../artifacts/logs/07-aeron-ksu-susfs-inventory.log
+          audit_tree() {
+            local repo_dir="$1"
+            local out_dir="$2"
+            local label="$3"
+            cd "$GITHUB_WORKSPACE/workspace/$repo_dir"
+            echo "== ${label} KSU/SuSFS inventory ==" | tee "$GITHUB_WORKSPACE/artifacts/${out_dir}/10-${label}-inventory.log"
+            for p in \
+              drivers/kernelsu KernelSU kernel fs/susfs.c fs/Kconfig fs/Makefile \
+              include/linux/susfs.h include/linux/susfs_def.h include/uapi/linux/susfs.h \
+              arch/arm64/configs/vendor arch/arm64/configs/vendor/kernelsu.config \
+              arch/arm64/configs/vendor/susfs.config arch/arm64/configs/moonwake_defconfig \
+              .gitignore build.sh; do
+              if [ -e "$p" ]; then
+                echo "FOUND $p" | tee -a "$GITHUB_WORKSPACE/artifacts/${out_dir}/10-${label}-inventory.log"
+                find "$p" -maxdepth 2 -type f 2>/dev/null | sort | tee -a "$GITHUB_WORKSPACE/artifacts/${out_dir}/10-${label}-inventory.log" || true
+              else
+                echo "MISSING $p" | tee -a "$GITHUB_WORKSPACE/artifacts/${out_dir}/10-${label}-inventory.log"
+              fi
+            done
+
+            rg -n "(^|[[:space:]])(menuconfig|config)[[:space:]]+(KSU|KSU_SUSFS|KPM)|KernelSU|kernelsu|susfs|SUSFS|ksu|sukisu|rksu|ksun|manual hook|KPROBE|KPROBES" \
+              Kconfig drivers fs kernel include security mm block arch/arm64/configs .gitignore build.sh 2>/dev/null \
+              | tee "$GITHUB_WORKSPACE/artifacts/${out_dir}/11-${label}-grep-ksu-susfs.log" || true
+
+            find arch/arm64/configs/vendor -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort \
+              | tee "$GITHUB_WORKSPACE/artifacts/${out_dir}/12-${label}-vendor-configs-list.log" || true
+            for cfg in arch/arm64/configs/vendor/*ksu* arch/arm64/configs/vendor/*susfs* arch/arm64/configs/vendor/*suki*; do
+              [ -f "$cfg" ] || continue
+              echo "===== $cfg =====" | tee -a "$GITHUB_WORKSPACE/artifacts/${out_dir}/13-${label}-vendor-ksu-configs.log"
+              cat "$cfg" | tee -a "$GITHUB_WORKSPACE/artifacts/${out_dir}/13-${label}-vendor-ksu-configs.log"
+            done
+          }
+          audit_tree aeron-ref aeron aeron
+          audit_tree moonwake-ref moonwake moonwake
+
+      - name: Merge Aeron KSU/SuSFS branch into base
+        shell: bash
+        env:
+          AERON_REPO: ${{ inputs.aeron_repo }}
+          AERON_KSU_BRANCH: ${{ inputs.aeron_ksu_branch }}
+        run: |
+          set -euo pipefail
+          cd workspace/kernel-src
+
+          echo "Adding Aeron remote and fetching ${AERON_KSU_BRANCH}" | tee ../../artifacts/logs/14-aeron-merge.log
+          git remote add aeron "https://github.com/${AERON_REPO}.git" || true
+          git fetch --depth 500 aeron "$AERON_KSU_BRANCH" 2>&1 | tee -a ../../artifacts/logs/14-aeron-merge.log
+
+          BASE="$(git merge-base HEAD "aeron/${AERON_KSU_BRANCH}" || true)"
+          [ -n "$BASE" ] || BASE=HEAD
+          echo "merge_base=$BASE" | tee ../../artifacts/logs/15-aeron-mergebase.log
+          git diff --stat "$BASE" "aeron/${AERON_KSU_BRANCH}" | tee ../../artifacts/logs/16-aeron-merge-diffstat.log || true
+          git diff --name-status "$BASE" "aeron/${AERON_KSU_BRANCH}" | tee ../../artifacts/logs/17-aeron-merge-files.log || true
+
+          # Aeron already merged newer Rubyx branches. Direct merge is safer than applying stale lineage-23.0..ksu_susfs patch.
+          set +e
+          git merge --no-ff --no-commit -X theirs "aeron/${AERON_KSU_BRANCH}" > ../../artifacts/logs/18-aeron-merge-apply.log 2>&1
+          merge_rc=$?
+          set -e
+          if [ "$merge_rc" != "0" ]; then
+            echo "ERROR: Aeron branch merge failed. Conflicted files:" | tee ../../artifacts/logs/19-aeron-merge-error.log
+            git diff --name-only --diff-filter=U | tee -a ../../artifacts/logs/19-aeron-merge-error.log || true
+            git status --short | tee ../../artifacts/logs/20-aeron-merge-status.log || true
+            exit 1
+          fi
+          git commit -m "Merge Aeron KSU/SuSFS branch" 2>&1 | tee ../../artifacts/logs/21-aeron-merge-commit.log || true
+
+      - name: Import MoonWake KSU config hints and install KernelSU driver if missing
+        shell: bash
+        env:
+          KSU_REPO: ${{ inputs.ksu_repo }}
+          KSU_BRANCH: ${{ inputs.ksu_branch }}
+        run: |
+          set -euo pipefail
+          cd workspace/kernel-src
+
+          echo "== Post Aeron merge KSU/SuSFS inventory ==" | tee ../../artifacts/logs/22-postmerge-inventory.log
+          for pth in drivers/kernelsu KernelSU kernel fs/susfs.c fs/Kconfig fs/Makefile include/linux/susfs.h include/linux/susfs_def.h include/uapi/linux/susfs.h arch/arm64/configs/vendor; do
+            if [ -e "$pth" ]; then echo "FOUND $pth"; else echo "MISSING $pth"; fi
+          done | tee -a ../../artifacts/logs/22-postmerge-inventory.log
+
+          # Copy MoonWake vendor KSU/SuSFS config fragments as reference only if absent.
+          mkdir -p arch/arm64/configs/vendor
+          for cfg in ../moonwake-ref/arch/arm64/configs/vendor/*ksu* ../moonwake-ref/arch/arm64/configs/vendor/*susfs* ../moonwake-ref/arch/arm64/configs/vendor/*suki*; do
+            [ -f "$cfg" ] || continue
+            base="$(basename "$cfg")"
+            if [ ! -f "arch/arm64/configs/vendor/$base" ]; then
+              cp "$cfg" "arch/arm64/configs/vendor/moonwake-$base"
+              echo "Imported MoonWake config hint: $base -> moonwake-$base" | tee -a ../../artifacts/logs/23-moonwake-config-import.log
             fi
           done
 
-          rg -n "(^|[[:space:]])(menuconfig|config)[[:space:]]+(KSU|KSU_SUSFS|KPM)|KernelSU|susfs|ksu" \
-            Kconfig drivers fs kernel include security mm block 2>/dev/null \
-            | tee ../../artifacts/logs/08-aeron-grep-ksu-susfs.log || true
-
-          git diff --stat "origin/${AERON_BASE_BRANCH}" "origin/${AERON_KSU_BRANCH}" \
-            | tee ../../artifacts/logs/09-aeron-delta-stat.log || true
-          git diff --name-status "origin/${AERON_BASE_BRANCH}" "origin/${AERON_KSU_BRANCH}" \
-            | tee ../../artifacts/logs/10-aeron-delta-files.log || true
-
-      - name: Generate and apply Aeron KSU/SuSFS delta to base
-        shell: bash
-        env:
-          AERON_KSU_BRANCH: ${{ inputs.aeron_ksu_branch }}
-          AERON_BASE_BRANCH: ${{ inputs.aeron_base_branch }}
-        run: |
-          set -euo pipefail
-          cd workspace/aeron-ref
-
-          # Full Aeron KSU/SuSFS delta. This intentionally captures more than just drivers/kernelsu,
-          # because Aeron KSU/SuSFS touches fs, kernel, security, mm, block, include, configs and Makefiles.
-          git diff --binary --find-renames "origin/${AERON_BASE_BRANCH}" "origin/${AERON_KSU_BRANCH}" > ../../artifacts/patches/aeron-full-ksu-susfs.patch
-
-          cd ../kernel-src
-          echo "Applying Aeron full delta ${AERON_BASE_BRANCH}..${AERON_KSU_BRANCH}" | tee ../../artifacts/logs/11-apply-aeron-delta.log
-          set +e
-          git apply --check ../../artifacts/patches/aeron-full-ksu-susfs.patch >> ../../artifacts/logs/11-apply-aeron-delta.log 2>&1
-          check_rc=$?
-          set -e
-          if [ "$check_rc" = "0" ]; then
-            git apply --index ../../artifacts/patches/aeron-full-ksu-susfs.patch 2>&1 | tee -a ../../artifacts/logs/11-apply-aeron-delta.log
-            git commit -m "Apply Aeron KSU/SuSFS full delta" || true
-          else
-            echo "Clean git apply failed; trying 3-way apply with rejects" | tee -a ../../artifacts/logs/11-apply-aeron-delta.log
-            set +e
-            git apply --3way --reject ../../artifacts/patches/aeron-full-ksu-susfs.patch >> ../../artifacts/logs/11-apply-aeron-delta.log 2>&1
-            apply_rc=$?
-            set -e
-            find . -name '*.rej' -print | tee ../../artifacts/logs/12-aeron-rejects.log || true
-            if [ "$apply_rc" != "0" ] || [ -s ../../artifacts/logs/12-aeron-rejects.log ]; then
-              echo "ERROR: Aeron patch rejected. Check artifacts/logs/11-apply-aeron-delta.log and 12-aeron-rejects.log" | tee ../../artifacts/logs/13-aeron-patch-error.log
-              exit 1
-            fi
+          # If Aeron only gives SuSFS hooks but not KernelSU driver/Kconfig, install selected KSU/RKSU driver.
+          if ! rg -q "(^|[[:space:]])(menuconfig|config)[[:space:]]+KSU\b" Kconfig drivers fs kernel security arch/arm64 2>/dev/null; then
+            echo "KSU Kconfig missing after Aeron merge; installing from ${KSU_REPO}:${KSU_BRANCH}" | tee ../../artifacts/logs/24-ksu-setup-needed.log
+            curl -L --fail --retry 5 --retry-delay 5 \
+              "https://raw.githubusercontent.com/${KSU_REPO}/${KSU_BRANCH}/kernel/setup.sh" \
+              -o ksu-setup.sh 2>&1 | tee ../../artifacts/logs/25-ksu-setup-download.log
+            bash ksu-setup.sh 2>&1 | tee ../../artifacts/logs/26-ksu-setup-run.log
             git add -A
-            git commit -m "Apply Aeron KSU/SuSFS full delta with 3-way" || true
+            git commit -m "Install KernelSU driver from ${KSU_REPO}:${KSU_BRANCH}" 2>&1 | tee ../../artifacts/logs/27-ksu-setup-commit.log || true
+          else
+            echo "KSU Kconfig exists after Aeron merge; setup.sh not needed" | tee ../../artifacts/logs/24-ksu-setup-not-needed.log
           fi
 
-          echo "== Post-patch source status ==" | tee ../../artifacts/logs/14-postpatch-git-status.log
-          git status --short | tee -a ../../artifacts/logs/14-postpatch-git-status.log || true
-          rg -n "(^|[[:space:]])(menuconfig|config)[[:space:]]+(KSU|KSU_SUSFS|KPM)|KernelSU|susfs|ksu" \
+          rg -n "(^|[[:space:]])(menuconfig|config)[[:space:]]+(KSU|KSU_SUSFS|KPM)|KernelSU|kernelsu|susfs|SUSFS|ksu|sukisu|rksu|ksun" \
             Kconfig drivers fs kernel include security mm block arch/arm64/configs 2>/dev/null \
-            | tee ../../artifacts/logs/15-postpatch-ksu-susfs-grep.log || true
+            | tee ../../artifacts/logs/28-postmerge-postsetup-ksu-susfs-grep.log || true
 
           if ! rg -q "(^|[[:space:]])(menuconfig|config)[[:space:]]+KSU\b" Kconfig drivers fs kernel security arch/arm64 2>/dev/null; then
-            echo "ERROR: Kconfig symbol KSU still missing after Aeron patch. KernelSU cannot be enabled." | tee ../../artifacts/logs/16-missing-ksu-kconfig.log
+            echo "ERROR: Kconfig symbol KSU is still missing after merge + setup.sh. Manager will never detect KSU." | tee ../../artifacts/logs/29-missing-ksu-kconfig.log
             exit 1
           fi
 
@@ -248,39 +328,31 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/toolchains/$CLANG_VERSION/bin:$PATH"
           cd workspace/kernel-src
 
-          make_common_array() {
-            MAKE_COMMON=(
-              O="$OUT_DIR"
-              ARCH=arm64
-              SUBARCH=arm64
-              CC="ccache clang"
-              LD=ld.lld
-              AR=llvm-ar
-              NM=llvm-nm
-              OBJCOPY=llvm-objcopy
-              OBJDUMP=llvm-objdump
-              STRIP=llvm-strip
-              CROSS_COMPILE=aarch64-linux-gnu-
-              CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-              CLANG_TRIPLE=aarch64-linux-gnu-
-              LLVM=1
-              LLVM_IAS=1
-            )
-          }
+          MAKE_COMMON=(
+            O="$OUT_DIR"
+            ARCH=arm64
+            SUBARCH=arm64
+            CC="ccache clang"
+            LD=ld.lld
+            AR=llvm-ar
+            NM=llvm-nm
+            OBJCOPY=llvm-objcopy
+            OBJDUMP=llvm-objdump
+            STRIP=llvm-strip
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            CLANG_TRIPLE=aarch64-linux-gnu-
+            LLVM=1
+            LLVM_IAS=1
+          )
 
-          select_defconfig() {
-            local def="$DEFCONFIG_INPUT"
-            if [ ! -f "arch/arm64/configs/$def" ]; then
-              def="$(find arch/arm64/configs -maxdepth 3 -type f \( -name '*ruby*defconfig' -o -name '*mt6877*defconfig' -o -name '*k6877*defconfig' \) | sed 's#arch/arm64/configs/##' | sort | head -n1)"
-            fi
-            test -n "$def" && test -f "arch/arm64/configs/$def"
-            echo "$def"
-          }
-
-          make_common_array
-          DEFCONFIG="$(select_defconfig)"
-          echo "$DEFCONFIG" | tee ../../artifacts/logs/17-selected-defconfig.log
-          make "${MAKE_COMMON[@]}" "$DEFCONFIG" 2>&1 | tee ../../artifacts/logs/18-defconfig.log
+          DEFCONFIG="$DEFCONFIG_INPUT"
+          if [ ! -f "arch/arm64/configs/$DEFCONFIG" ]; then
+            DEFCONFIG="$(find arch/arm64/configs -maxdepth 3 -type f \( -name '*ruby*defconfig' -o -name '*mt6877*defconfig' -o -name '*k6877*defconfig' \) | sed 's#arch/arm64/configs/##' | sort | head -n1)"
+          fi
+          test -n "$DEFCONFIG" && test -f "arch/arm64/configs/$DEFCONFIG"
+          echo "$DEFCONFIG" | tee ../../artifacts/logs/30-selected-defconfig.log
+          make "${MAKE_COMMON[@]}" "$DEFCONFIG" 2>&1 | tee ../../artifacts/logs/31-defconfig.log
 
           mkdir -p arch/arm64/configs/vendor
           cat > arch/arm64/configs/vendor/droidspaces-runtime.config <<'EOF'
@@ -350,60 +422,54 @@ jobs:
           EOF
           sed -i 's/^          //' arch/arm64/configs/vendor/droidspaces-runtime.config
 
-          # Merge runtime config, but NEVER merge a no-root config in this workflow.
           scripts/kconfig/merge_config.sh -m -O "$OUT_DIR" "$OUT_DIR/.config" arch/arm64/configs/vendor/droidspaces-runtime.config \
-            2>&1 | tee ../../artifacts/logs/19-merge-droidspaces-runtime.log
+            2>&1 | tee ../../artifacts/logs/32-merge-droidspaces-runtime.log
 
-          # Keep UTS_RELEASE short to avoid >64 chars errors.
+          # Merge MoonWake/Aeron KSU/SuSFS fragments if present. These often contain the exact hook mode used by the team.
+          for cfg in \
+            arch/arm64/configs/vendor/kernelsu.config \
+            arch/arm64/configs/vendor/susfs.config \
+            arch/arm64/configs/vendor/moonwake-*ksu* \
+            arch/arm64/configs/vendor/moonwake-*susfs* \
+            arch/arm64/configs/vendor/moonwake-*suki*; do
+            [ -f "$cfg" ] || continue
+            echo "Merging optional KSU/SuSFS config fragment: $cfg" | tee -a ../../artifacts/logs/33-merge-ksu-fragments.log
+            scripts/kconfig/merge_config.sh -m -O "$OUT_DIR" "$OUT_DIR/.config" "$cfg" \
+              2>&1 | tee -a ../../artifacts/logs/33-merge-ksu-fragments.log || true
+          done
+
           scripts/config --file "$OUT_DIR/.config" --set-str LOCALVERSION "-DS-AKSU"
           scripts/config --file "$OUT_DIR/.config" --disable LOCALVERSION_AUTO || true
 
-          # Force KSU/SuSFS builtin. If a symbol is unknown, scripts/config may not preserve it after olddefconfig;
-          # the post-check below is authoritative.
           for sym in \
-            KSU \
-            KSU_KPROBES_HOOK \
-            KSU_KPROBE_HOOKS \
-            KSU_MANUAL_HOOK \
-            KSU_SUSFS \
-            KSU_SUSFS_SUS_PATH \
-            KSU_SUSFS_SUS_MOUNT \
-            KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
-            KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
-            KSU_SUSFS_SUS_KSTAT \
-            KSU_SUSFS_TRY_UMOUNT \
-            KSU_SUSFS_SPOOF_UNAME \
-            KSU_SUSFS_ENABLE_LOG \
-            KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-            KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-            KSU_SUSFS_OPEN_REDIRECT \
-            KSU_SUSFS_SUS_SU \
-            KALLSYMS \
-            KALLSYMS_ALL \
-            IKCONFIG \
-            IKCONFIG_PROC; do
-            echo "forcing CONFIG_${sym}=y" | tee -a ../../artifacts/logs/20-force-ksu-symbols.log
+            KSU KSU_KPROBES_HOOK KSU_KPROBE_HOOKS KSU_MANUAL_HOOK \
+            KSU_SUSFS KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT \
+            KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
+            KSU_SUSFS_SUS_KSTAT KSU_SUSFS_TRY_UMOUNT KSU_SUSFS_SPOOF_UNAME \
+            KSU_SUSFS_ENABLE_LOG KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_SU \
+            KALLSYMS KALLSYMS_ALL IKCONFIG IKCONFIG_PROC; do
+            echo "forcing CONFIG_${sym}=y" | tee -a ../../artifacts/logs/34-force-ksu-symbols.log
             scripts/config --file "$OUT_DIR/.config" --enable "$sym" || true
           done
 
-          make "${MAKE_COMMON[@]}" olddefconfig 2>&1 | tee ../../artifacts/logs/21-olddefconfig.log
-          cp "$OUT_DIR/.config" ../../artifacts/logs/22-final-kernel.config
+          make "${MAKE_COMMON[@]}" olddefconfig 2>&1 | tee ../../artifacts/logs/35-olddefconfig.log
+          cp "$OUT_DIR/.config" ../../artifacts/logs/36-final-kernel.config
 
           {
             echo "==== FINAL KSU CONFIG ===="
             grep -E '^CONFIG_KSU|^CONFIG_KPM|^CONFIG_SUSFS|^CONFIG_KALLSYMS|^CONFIG_IKCONFIG|^CONFIG_OVERLAY_FS|^CONFIG_PID_NS|^CONFIG_NET_NS|^CONFIG_CGROUPS' "$OUT_DIR/.config" || true
-          } | tee ../../artifacts/logs/23-final-ksu-config.log
+          } | tee ../../artifacts/logs/37-final-ksu-config.log
 
           if [ "$STRICT_KSU" = "true" ]; then
-            grep -q '^CONFIG_KSU=y' "$OUT_DIR/.config" || { echo "ERROR: CONFIG_KSU is not y after olddefconfig" | tee ../../artifacts/logs/24-ksu-not-enabled-error.log; exit 1; }
+            grep -q '^CONFIG_KSU=y' "$OUT_DIR/.config" || { echo "ERROR: CONFIG_KSU is not y after olddefconfig" | tee ../../artifacts/logs/38-ksu-not-enabled-error.log; exit 1; }
           fi
 
-          # Sanity check UTS release before expensive build.
-          make "${MAKE_COMMON[@]}" include/generated/utsrelease.h 2>&1 | tee ../../artifacts/logs/25-utsrelease.log
+          make "${MAKE_COMMON[@]}" include/generated/utsrelease.h 2>&1 | tee ../../artifacts/logs/39-utsrelease.log
           UTS="$(sed -n 's/^#define UTS_RELEASE "\(.*\)"/\1/p' "$OUT_DIR/include/generated/utsrelease.h" | head -n1)"
-          echo "UTS_RELEASE=${UTS}" | tee ../../artifacts/logs/26-utsrelease-value.log
+          echo "UTS_RELEASE=${UTS}" | tee ../../artifacts/logs/40-utsrelease-value.log
           if [ "${#UTS}" -gt 64 ]; then
-            echo "ERROR: UTS_RELEASE too long: ${#UTS}" | tee ../../artifacts/logs/27-utsrelease-too-long.log
+            echo "ERROR: UTS_RELEASE too long: ${#UTS}" | tee ../../artifacts/logs/41-utsrelease-too-long.log
             exit 1
           fi
 
@@ -430,44 +496,44 @@ jobs:
             LLVM=1
             LLVM_IAS=1
           )
-
           set +e
-          make -j"$(nproc --all)" "${MAKE_COMMON[@]}" 2>&1 | tee ../../artifacts/logs/28-build.log
+          make -j"$(nproc --all)" "${MAKE_COMMON[@]}" 2>&1 | tee ../../artifacts/logs/42-build.log
           rc=${PIPESTATUS[0]}
           set -e
           if [ "$rc" != "0" ]; then
-            echo "ERROR: kernel build failed rc=${rc}" | tee ../../artifacts/logs/29-build-error.log
-            grep -nEi 'error:|fatal:|undefined reference|No rule to make target|implicit declaration|redefinition|conflicting types|No such file|Stop\.' ../../artifacts/logs/28-build.log \
-              | tee ../../artifacts/logs/30-build-error-extract.log || true
+            echo "ERROR: kernel build failed rc=${rc}" | tee ../../artifacts/logs/43-build-error.log
+            grep -nEi 'error:|fatal:|undefined reference|No rule to make target|implicit declaration|redefinition|conflicting types|No such file|Stop\.' ../../artifacts/logs/42-build.log \
+              | tee ../../artifacts/logs/44-build-error-extract.log || true
             exit "$rc"
           fi
-
           find "$OUT_DIR/arch/arm64/boot" -maxdepth 5 -type f \
             \( -name 'Image' -o -name 'Image.gz' -o -name 'Image.gz-dtb' -o -name '*.dtb' -o -name '*.dtbo' -o -name 'dtbo.img' \) \
-            -printf '%p %s bytes\n' | sort | tee ../../artifacts/logs/31-build-outputs.log
+            -printf '%p %s bytes\n' | sort | tee ../../artifacts/logs/45-build-outputs.log
           test -f "$OUT_DIR/arch/arm64/boot/Image.gz" || test -f "$OUT_DIR/arch/arm64/boot/Image.gz-dtb"
 
       - name: Audit built kernel image for KSU/SuSFS strings and symbols
         shell: bash
+        env:
+          STRICT_IMAGE_STRINGS: ${{ inputs.strict_image_strings }}
         run: |
           set -euo pipefail
           cd workspace/kernel-src
           BOOTDIR="$OUT_DIR/arch/arm64/boot"
           IMAGE=""
           [ -f "$BOOTDIR/Image" ] && IMAGE="$BOOTDIR/Image"
-          [ -n "$IMAGE" ] || { echo "WARN: raw Image missing; strings audit limited" | tee ../../artifacts/logs/32-image-audit-warning.log; exit 0; }
-
+          [ -n "$IMAGE" ] || { echo "WARN: raw Image missing; strings audit limited" | tee ../../artifacts/logs/46-image-audit-warning.log; exit 0; }
           {
             echo "==== strings grep ksu/susfs ===="
             strings "$IMAGE" | grep -Ei 'KernelSU|kernelsu|KSU|susfs|SUSFS|ksud|ksu' | head -n 300 || true
-            echo "==== kallsyms-like System.map grep ===="
+            echo "==== System.map grep ===="
             if [ -f "$OUT_DIR/System.map" ]; then grep -Ei 'ksu|susfs|kernelsu' "$OUT_DIR/System.map" | head -n 300 || true; fi
-          } | tee ../../artifacts/logs/33-built-image-ksu-susfs-audit.log
-
-          if ! strings "$IMAGE" | grep -Eiq 'KernelSU|kernelsu|susfs|SUSFS|ksud|ksu'; then
-            echo "ERROR: Built Image does not contain visible KSU/SuSFS strings. Manager will probably not detect KSU." \
-              | tee ../../artifacts/logs/34-built-image-missing-ksu-error.log
-            exit 1
+          } | tee ../../artifacts/logs/47-built-image-ksu-susfs-audit.log
+          if [ "$STRICT_IMAGE_STRINGS" = "true" ]; then
+            if ! strings "$IMAGE" | grep -Eiq 'KernelSU|kernelsu|susfs|SUSFS|ksud|ksu'; then
+              echo "ERROR: Built Image does not contain visible KSU/SuSFS strings. Manager will probably not detect KSU." \
+                | tee ../../artifacts/logs/48-built-image-missing-ksu-error.log
+              exit 1
+            fi
           fi
 
       - name: Download and inspect Aeron AnyKernel3 base ZIP
@@ -478,17 +544,17 @@ jobs:
         run: |
           set -euo pipefail
           cd workspace
-          echo "Forced Aeron ZIP URL: ${AERON_ZIP_URL}" | tee ../artifacts/logs/35-aeron-zip-url.log
+          echo "Forced Aeron ZIP URL: ${AERON_ZIP_URL}" | tee ../artifacts/logs/49-aeron-zip-url.log
           curl -L --fail --connect-timeout 30 --retry 10 --retry-delay 10 --retry-all-errors \
-            -H "User-Agent: Mozilla/5.0 GitHubActions AeronKSUAudit" \
+            -H "User-Agent: Mozilla/5.0 GitHubActions AeronMoonWakeKSUAudit" \
             -H "Accept: application/octet-stream" \
             "$AERON_ZIP_URL" -o aeron-anykernel-base.zip
-          echo "${AERON_ZIP_SHA256}  aeron-anykernel-base.zip" | sha256sum -c - | tee ../artifacts/logs/36-aeron-zip-sha256-check.log
-          unzip -l aeron-anykernel-base.zip | tee ../artifacts/logs/37-aeron-anykernel-list.log
+          echo "${AERON_ZIP_SHA256}  aeron-anykernel-base.zip" | sha256sum -c - | tee ../artifacts/logs/50-aeron-zip-sha256-check.log
+          unzip -l aeron-anykernel-base.zip | tee ../artifacts/logs/51-aeron-anykernel-list.log
           rm -rf anykernel
           mkdir -p anykernel
           unzip -q aeron-anykernel-base.zip -d anykernel
-          find anykernel -maxdepth 4 -type f | sort | tee ../artifacts/logs/38-aeron-anykernel-tree.log
+          find anykernel -maxdepth 4 -type f | sort | tee ../artifacts/logs/52-aeron-anykernel-tree.log
 
       - name: Create runtime audit helper scripts
         shell: bash
@@ -521,38 +587,36 @@ jobs:
           KERNEL_BRANCH: ${{ inputs.kernel_branch }}
           AERON_REPO: ${{ inputs.aeron_repo }}
           AERON_KSU_BRANCH: ${{ inputs.aeron_ksu_branch }}
-          AERON_BASE_BRANCH: ${{ inputs.aeron_base_branch }}
+          MOONWAKE_REPO: ${{ inputs.moonwake_repo }}
+          MOONWAKE_BRANCH: ${{ inputs.moonwake_branch }}
         run: |
           set -euo pipefail
           cd workspace
           AK=anykernel
           KERNEL_BOOT="kernel-src/$OUT_DIR/arch/arm64/boot"
-
           rm -f "$AK"/Image "$AK"/Image.gz "$AK"/Image.gz-dtb "$AK"/*.dtb "$AK"/*.dtbo "$AK"/dtbo.img || true
           [ ! -f "$KERNEL_BOOT/Image.gz-dtb" ] || cp "$KERNEL_BOOT/Image.gz-dtb" "$AK/Image.gz-dtb"
           [ ! -f "$KERNEL_BOOT/Image.gz" ] || cp "$KERNEL_BOOT/Image.gz" "$AK/Image.gz"
           [ ! -f "$KERNEL_BOOT/Image" ] || cp "$KERNEL_BOOT/Image" "$AK/Image"
           [ ! -f "$KERNEL_BOOT/dtbo.img" ] || cp "$KERNEL_BOOT/dtbo.img" "$AK/dtbo.img"
           find "$KERNEL_BOOT/dts" -type f \( -name '*.dtb' -o -name '*.dtbo' \) -exec cp -f {} "$AK/" \; 2>/dev/null || true
-
-          cat > "$AK/build-manifest-aeron-ksu-susfs-audit.txt" <<EOF
+          cat > "$AK/build-manifest-aeron-moonwake-ksu-susfs-audit.txt" <<EOF
           Build UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)
           Base kernel: $KERNEL_REPO / $KERNEL_BRANCH
-          Aeron source: $AERON_REPO / $AERON_BASE_BRANCH..$AERON_KSU_BRANCH
+          Aeron source merged: $AERON_REPO / $AERON_KSU_BRANCH
+          MoonWake audited: $MOONWAKE_REPO / $MOONWAKE_BRANCH
           Device: ruby / mt6877
           Build mode: KSU/SuSFS enforced and audited
-          Important: install a manager compatible with the KernelSU/RKSU implementation actually reported by runtime audit.
+          Runtime audit: run ksu-runtime-audit-adb.sh after flashing.
           EOF
-          sed -i 's/^          //' "$AK/build-manifest-aeron-ksu-susfs-audit.txt"
-
-          cp ../artifacts/logs/23-final-ksu-config.log "$AK/final-ksu-config.txt" || true
+          sed -i 's/^          //' "$AK/build-manifest-aeron-moonwake-ksu-susfs-audit.txt"
+          cp ../artifacts/logs/37-final-ksu-config.log "$AK/final-ksu-config.txt" || true
           cp ../artifacts/runtime/ksu-runtime-audit-adb.sh "$AK/ksu-runtime-audit-adb.sh" || true
-
-          find "$AK" -maxdepth 3 -type f | sort | tee ../artifacts/logs/39-anykernel-final-tree.log
+          find "$AK" -maxdepth 3 -type f | sort | tee ../artifacts/logs/53-anykernel-final-tree.log
           OUTZIP="../artifacts/zips/Rubyx-ruby-${OUTPUT_SUFFIX}-$(date -u +%Y%m%d-%H%M).zip"
-          (cd "$AK" && zip -r9 "$OUTZIP" . -x '*.git*' 2>&1 | tee ../../artifacts/logs/40-zip.log)
-          sha256sum "$OUTZIP" | tee ../artifacts/logs/41-final-zip-sha256.log
-          ls -lh ../artifacts/zips | tee ../artifacts/logs/42-zips.log
+          (cd "$AK" && zip -r9 "$OUTZIP" . -x '*.git*' 2>&1 | tee ../../artifacts/logs/54-zip.log)
+          sha256sum "$OUTZIP" | tee ../artifacts/logs/55-final-zip-sha256.log
+          ls -lh ../artifacts/zips | tee ../artifacts/logs/56-zips.log
           test "$(stat -c%s "$OUTZIP")" -gt 10000000
 
       - name: Generate audit summary
@@ -561,35 +625,40 @@ jobs:
         run: |
           set +e
           {
-            echo "# Aeron KSU/SuSFS Audit Summary"
+            echo "# Aeron/MoonWake KSU/SuSFS Audit Summary"
             echo
             echo "## Base"
             cat artifacts/logs/02-base-kernel-info.log 2>/dev/null
             echo
             echo "## Aeron"
-            cat artifacts/logs/04-aeron-branch-info.log 2>/dev/null
+            cat artifacts/aeron/04-aeron-branch-info.log 2>/dev/null
+            echo
+            echo "## MoonWake"
+            cat artifacts/moonwake/07-moonwake-branch-info.log 2>/dev/null
             echo
             echo "## Final KSU config"
-            cat artifacts/logs/23-final-ksu-config.log 2>/dev/null
+            cat artifacts/logs/37-final-ksu-config.log 2>/dev/null
             echo
             echo "## Built image KSU/SuSFS audit"
-            cat artifacts/logs/33-built-image-ksu-susfs-audit.log 2>/dev/null | head -n 120
+            cat artifacts/logs/47-built-image-ksu-susfs-audit.log 2>/dev/null | head -n 120
             echo
             echo "## Errors extracted"
-            cat artifacts/logs/30-build-error-extract.log 2>/dev/null
-            cat artifacts/logs/12-aeron-rejects.log 2>/dev/null
-            cat artifacts/logs/16-missing-ksu-kconfig.log 2>/dev/null
-            cat artifacts/logs/24-ksu-not-enabled-error.log 2>/dev/null
-            cat artifacts/logs/34-built-image-missing-ksu-error.log 2>/dev/null
+            cat artifacts/logs/19-aeron-merge-error.log 2>/dev/null
+            cat artifacts/logs/29-missing-ksu-kconfig.log 2>/dev/null
+            cat artifacts/logs/38-ksu-not-enabled-error.log 2>/dev/null
+            cat artifacts/logs/44-build-error-extract.log 2>/dev/null
+            cat artifacts/logs/48-built-image-missing-ksu-error.log 2>/dev/null
           } | tee artifacts/diagnostics/AUDIT-SUMMARY.md
 
       - name: Upload all audit artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ruby-aeron-ksu-susfs-audit-artifacts
+          name: ruby-aeron-moonwake-ksu-susfs-audit-artifacts
           path: |
             artifacts/logs/**
+            artifacts/aeron/**
+            artifacts/moonwake/**
             artifacts/patches/**
             artifacts/source/**
             artifacts/diagnostics/**
