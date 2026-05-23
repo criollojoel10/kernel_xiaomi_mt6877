@@ -1,5 +1,4 @@
-
-name: Build Rubyx AOSP DroidSpaces KSU Strict Fallback
+name: Build Rubyx AOSP DroidSpaces KSU Strict Fallback V2
 
 on:
   workflow_dispatch:
@@ -164,7 +163,6 @@ jobs:
           setup	DXRN-MoonWake/KernelSU-Next	next-susfs	ksunext-next-susfs	DXRN KSUNext SuSFS candidate
           setup	DXRN-MoonWake/KernelSU-Next	stable	ksunext-stable	Last resort with compat shim
           EOF
-          sed -i 's/^[[:space:]]*//' "$ARTIFACTS_DIR/manifests/ksu-fallback-order.tsv"
 
           make_common_array() {
             MAKE_COMMON=(O="$OUT_DIR" ARCH=arm64 SUBARCH=arm64 CC="ccache clang" LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1)
@@ -238,13 +236,11 @@ jobs:
           CONFIG_BPF_JIT=y
           CONFIG_ANDROID_PARANOID_NETWORK=n
           EOF
-            sed -i 's/^[[:space:]]*//' "$src/arch/arm64/configs/vendor/droidspaces.config"
             cat > "$src/arch/arm64/configs/vendor/no-root-frameworks.config" <<'EOF'
           # CONFIG_KSU is not set
           # CONFIG_KSU_SUSFS is not set
           # CONFIG_KPM is not set
           EOF
-            sed -i 's/^[[:space:]]*//' "$src/arch/arm64/configs/vendor/no-root-frameworks.config"
           }
 
           select_defconfig() {
@@ -265,7 +261,11 @@ jobs:
             local src="$1" repo="$2" branch="$3" label="$4"
             pushd "$src" >/dev/null
             curl -L --fail --retry 3 --retry-delay 5 "https://raw.githubusercontent.com/${repo}/${branch}/kernel/setup.sh" -o ksu-setup.sh 2>&1 | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-ksu-setup.log"
-            if [ "$label" = "ksunext-legacy" ]; then bash ksu-setup.sh legacy 2>&1 | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-ksu-setup.log"; else bash ksu-setup.sh 2>&1 | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-ksu-setup.log"; fi
+            if [ "$label" = "ksunext-legacy" ]; then
+              bash ksu-setup.sh legacy 2>&1 | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-ksu-setup.log"
+            else
+              bash ksu-setup.sh 2>&1 | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-ksu-setup.log"
+            fi
             popd >/dev/null
           }
 
@@ -292,9 +292,13 @@ jobs:
           }
 
           audit_integrated_ksu() {
-            local src="$1" repo="$2" branch="$3" label="$4"
+            local src="$1" label="$4"
             find "$src" -maxdepth 4 -type d \( -iname '*kernelsu*' -o -iname '*susfs*' -o -iname '*kpm*' -o -iname '*kpatch*' \) | sort | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-integrated-tree.log" || true
-            for d in "$src"/KernelSU "$src"/KernelSU-Next "$src"/RKSU "$src"/drivers/kernelsu; do [ -d "$d/.git" ] && { git -C "$d" remote -v; git -C "$d" rev-parse HEAD; git -C "$d" show -s --format='%H%n%cI%n%s' HEAD; git -C "$d" log --oneline -20; } | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-integrated-git.log" || true; done
+            for d in "$src"/KernelSU "$src"/KernelSU-Next "$src"/RKSU "$src"/drivers/kernelsu; do
+              if [ -d "$d/.git" ]; then
+                { git -C "$d" remote -v; git -C "$d" rev-parse HEAD; git -C "$d" show -s --format='%H%n%cI%n%s' HEAD; git -C "$d" log --oneline -20; } | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-integrated-git.log" || true
+              fi
+            done
           }
 
           symbol_exists() { local src="$1" sym="$2"; grep -Rqs "^[[:space:]]*config[[:space:]]\+${sym}$" "$src"/Kconfig "$src"/drivers "$src"/fs "$src"/kernel "$src"/security "$src"/arch/arm64 2>/dev/null; }
@@ -306,31 +310,10 @@ jobs:
             if grep -Rqs "copy_to_kernel_nofault" drivers/kernelsu KernelSU-Next/kernel KernelSU/kernel 2>/dev/null && ! grep -Rqs "copy_to_kernel_nofault" include kernel mm arch 2>/dev/null; then
               target_file="$(grep -Rsl "copy_to_kernel_nofault" drivers/kernelsu KernelSU-Next/kernel KernelSU/kernel 2>/dev/null | head -n1)"
               if [ -n "$target_file" ]; then
-                python3 - "$target_file" <<'PY'
-                import sys
-                from pathlib import Path
-                p = Path(sys.argv[1])
-                s = p.read_text()
-                shim = '''
-                #ifndef copy_to_kernel_nofault
-                #include <linux/uaccess.h>
-                static inline long ksu_copy_to_kernel_nofault_compat(void *dst, const void *src, size_t size)
-                {
-                    return probe_kernel_write(dst, src, size);
-                }
-                #define copy_to_kernel_nofault(dst, src, size) ksu_copy_to_kernel_nofault_compat((dst), (src), (size))
-                #endif
-                '''
-                if "ksu_copy_to_kernel_nofault_compat" not in s:
-                    lines = s.splitlines()
-                    idx = 0
-                    for i, line in enumerate(lines):
-                        if line.startswith('#include'):
-                            idx = i + 1
-                    lines.insert(idx, shim)
-                    p.write_text('\n'.join(lines) + '\n')
-                PY
-                echo "Patched $target_file" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-compat-patches.log"
+                cp "$target_file" "$target_file.before-copy_to_kernel_nofault-compat" || true
+                grep -q '^#include <linux/uaccess.h>' "$target_file" || sed -i '1i#include <linux/uaccess.h>' "$target_file"
+                sed -i 's/copy_to_kernel_nofault/probe_kernel_write/g' "$target_file"
+                echo "Patched $target_file: copy_to_kernel_nofault -> probe_kernel_write" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-compat-patches.log"
               fi
             fi
             popd >/dev/null
