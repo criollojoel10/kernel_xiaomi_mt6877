@@ -1,0 +1,276 @@
+name: Study KSU And SuSFS Branches For Ruby AOSP
+
+"on":
+  workflow_dispatch:
+    inputs:
+      dxrn_org:
+        description: "OrganizaciÃ³n DXRN a estudiar"
+        required: true
+        default: "DXRN-MoonWake"
+        type: string
+      base_repo:
+        description: "Kernel stock/base limpio para comparar"
+        required: true
+        default: "RubyxLabs/kernel_xiaomi_mt6877"
+        type: string
+      base_branch:
+        description: "Branch stock/base limpio"
+        required: true
+        default: "lineage-23.2"
+        type: string
+      output_suffix:
+        description: "Sufijo del artifact"
+        required: true
+        default: "KSU-SuSFS-Study-Ruby-6Repos"
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  study:
+    name: Study targeted KSU/SuSFS repos and branches
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Prepare tools and folders
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p workspace artifacts/logs artifacts/reports artifacts/raw artifacts/patches artifacts/branches artifacts/manifests
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git curl jq ripgrep zip file ca-certificates python3
+
+      - name: Create targeted repo and branch manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > artifacts/manifests/target-branches.tsv <<'EOF'
+          repo	branch	role	why
+          KernelSU-Next	stable	ksu-next-current	DXRN current KernelSU-Next default/current reference
+          KernelSU-Next	next-manual-v1.5	ksu-next-manual-hook	Manual-hook branch candidate if ruby needs manual hooks
+          KernelSU-Next	legacy	ksu-next-legacy	Legacy KSU-Next reference without forcing current SuSFS branches
+          KernelSU-Next	legacy-susfs	susfs-reference	SuSFS reference branch to isolate what not to include
+          KernelSU-Next	next-susfs	susfs-reference	Current SuSFS reference branch to isolate addon changes
+          KernelAction	main	build-scripts	DXRN CI/build scripts and patch automation
+          RKSU	new_upstream	rksu-current	DXRN RKSU current upstream reference
+          RKSU	main	rksu-baseline	RKSU main branch baseline
+          RKSU	susfs	susfs-reference	RKSU SuSFS reference to isolate addon changes
+          RKSU	susfs-rksu-master	susfs-reference	RKSU SuSFS integration branch
+          KernelSU	main	ksu-baseline	DXRN KernelSU baseline fork
+          KernelSU	ksufs	ksu-susfs-mixed	Mixed KSU/SuSFS reference, inspect carefully
+          KernelSU	susfs-rksu-master	susfs-reference	SuSFS/RKSU branch to identify removable pieces
+          aeron_kernel_xiaomi_ruby	ksu_susfs	ruby-aosp-ksu-susfs	Aeron ruby AOSP branch with KSU/SuSFS integration
+          aeron_kernel_xiaomi_ruby	lineage-23.0	ruby-aosp-baseline	Aeron lineage reference for diff comparison
+          moonwake_kernel_xiaomi_ruby	moon	ruby-aosp-ksu	MoonWake AOSP/ruby practical kernel reference
+          EOF
+          sed -i 's/^[[:space:]]*//' artifacts/manifests/target-branches.tsv
+          column -t -s $'\t' artifacts/manifests/target-branches.tsv | tee artifacts/reports/target-branches.pretty.txt
+
+      - name: Query remote branches and validate targets
+        shell: bash
+        env:
+          DXRN_ORG: ${{ github.event.inputs.dxrn_org }}
+        run: |
+          set -euo pipefail
+          cd workspace
+          : > ../artifacts/reports/validated-target-branches.tsv
+          tail -n +2 ../artifacts/manifests/target-branches.tsv | while IFS=$'\t' read -r repo branch role why; do
+            url="https://github.com/${DXRN_ORG}/${repo}.git"
+            echo "== ${repo} ==" | tee -a ../artifacts/logs/remote-branches.log
+            git ls-remote --heads "$url" | awk '{print $2}' | sed 's#refs/heads/##' | sort | tee "../artifacts/branches/${repo}-branches.txt" >/dev/null || true
+            if grep -Fxq "$branch" "../artifacts/branches/${repo}-branches.txt"; then
+              echo -e "${repo}\t${branch}\t${role}\tFOUND\t${why}" | tee -a ../artifacts/reports/validated-target-branches.tsv
+            else
+              echo -e "${repo}\t${branch}\t${role}\tMISSING\t${why}" | tee -a ../artifacts/reports/validated-target-branches.tsv
+            fi
+          done
+
+      - name: Clone targeted branches and record latest commits
+        shell: bash
+        env:
+          DXRN_ORG: ${{ github.event.inputs.dxrn_org }}
+        run: |
+          set -euo pipefail
+          cd workspace
+          mkdir -p refs
+          : > ../artifacts/reports/cloned-targets.tsv
+          : > ../artifacts/reports/latest-commits.tsv
+          tail -n +2 ../artifacts/manifests/target-branches.tsv | while IFS=$'\t' read -r repo branch role why; do
+            url="https://github.com/${DXRN_ORG}/${repo}.git"
+            if ! grep -Fxq "$branch" "../artifacts/branches/${repo}-branches.txt" 2>/dev/null; then
+              echo -e "${repo}\t${branch}\t${role}\tSKIPPED_BRANCH_MISSING" | tee -a ../artifacts/reports/cloned-targets.tsv
+              continue
+            fi
+            safe_branch="$(echo "$branch" | tr '/:@ ' '____')"
+            dest="refs/${repo}__${safe_branch}"
+            echo "== clone ${repo}:${branch} ==" | tee -a ../artifacts/logs/clone-targets.log
+            git clone --depth 1 --filter=blob:none --branch "$branch" "$url" "$dest" 2>&1 | tee -a ../artifacts/logs/clone-targets.log
+            (
+              cd "$dest"
+              commit="$(git rev-parse HEAD)"
+              date="$(git show -s --format=%cI HEAD)"
+              subject="$(git show -s --format=%s HEAD | tr '\t' ' ')"
+              echo -e "${repo}\t${branch}\t${role}\t${commit}\t${date}\t${subject}"
+            ) | tee -a ../artifacts/reports/latest-commits.tsv
+            echo -e "${repo}\t${branch}\t${role}\t${dest}" | tee -a ../artifacts/reports/cloned-targets.tsv
+          done
+
+      - name: Clone clean stock base for kernel diffs
+        shell: bash
+        env:
+          BASE_REPO: ${{ github.event.inputs.base_repo }}
+          BASE_BRANCH: ${{ github.event.inputs.base_branch }}
+        run: |
+          set -euo pipefail
+          cd workspace
+          git clone --filter=blob:none --no-checkout "https://github.com/${BASE_REPO}.git" base-kernel
+          cd base-kernel
+          git fetch --depth 1 origin "$BASE_BRANCH"
+          git checkout FETCH_HEAD
+          git rev-parse HEAD | tee ../../artifacts/logs/base-commit.log
+          git show -s --format='%H%n%cI%n%s' HEAD | tee ../../artifacts/reports/base-latest-commit.txt
+          git log --oneline -30 | tee ../../artifacts/logs/base-history.log
+
+      - name: Inventory KSU, SuSFS, hooks, setup scripts and managers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd workspace
+          SEARCH_ROOTS="refs"
+
+          rg -n --hidden --glob '!**/.git/**' \
+            'KernelSU|KernelSU-Next|SukiSU|RKSU|KSU|ksu_|ksud|ksuinit|CONFIG_KSU|drivers/kernelsu|KernelSU/kernel|kernel/setup\.sh|manager|superuser' \
+            $SEARCH_ROOTS | tee ../artifacts/reports/01-full-ksu-inventory.log || true
+
+          rg -n --hidden --glob '!**/.git/**' \
+            'SuSFS|SUSFS|susfs|CONFIG_KSU_SUSFS|KSU_SUSFS_|sus_path|sus_mount|sus_su|hide_sus|spoof_uname|open_redirect|Magic Mount|KPM|KPatch|APatch' \
+            $SEARCH_ROOTS | tee ../artifacts/reports/02-full-susfs-addon-inventory.log || true
+
+          rg -n --hidden --glob '!**/.git/**' \
+            '(KernelSU|KSU|ksu_).*(SuSFS|SUSFS|susfs|CONFIG_KSU_SUSFS|KPM|KPatch|APatch)|(SuSFS|SUSFS|susfs|CONFIG_KSU_SUSFS|KPM|KPatch|APatch).*(KernelSU|KSU|ksu_)' \
+            $SEARCH_ROOTS | tee ../artifacts/reports/03-ksu-susfs-intersection.log || true
+
+          rg -n --hidden --glob '!**/.git/**' \
+            'CONFIG_KSU|config KSU|menuconfig KSU|source ".*KernelSU|drivers/kernelsu|obj-\$\(CONFIG_KSU\)|KernelSU/kernel|KSU_LSM|KSU_MANUAL|KSU_KPROBES|KSU_WITH_KPROBES' \
+            $SEARCH_ROOTS | tee ../artifacts/reports/04-ksu-kconfig-makefile-config-clues.log || true
+
+          rg -n --hidden --glob '!**/.git/**' \
+            'CONFIG_KSU_SUSFS|config KSU_SUSFS|SUSFS|susfs|sus_path|sus_mount|sus_su|KSU_SUSFS_' \
+            $SEARCH_ROOTS | tee ../artifacts/reports/05-susfs-kconfig-makefile-config-clues.log || true
+
+          rg -n --hidden --glob '!**/.git/**' \
+            'execve|sys_execve|faccessat|statx|input_handle_event|vfs_read|devpts|sys_reboot|security_bprm|security_file|task_prctl|ksu_handle_|ksu_handle_execve|ksu_handle_faccessat|ksu_handle_stat' \
+            $SEARCH_ROOTS | tee ../artifacts/reports/06-hook-clues.log || true
+
+          find $SEARCH_ROOTS -type f \( -iname '*setup*.sh' -o -iname '*ksu*.sh' -o -name 'Kconfig' -o -name 'Makefile' -o -iname '*defconfig' -o -iname '*.config' -o -iname '*.yml' -o -iname '*.yaml' \) \
+            -not -path '*/.git/*' | sort | tee ../artifacts/reports/07-setup-kconfig-makefile-files.txt || true
+
+      - name: Diff ruby kernel references against stock base
+        shell: bash
+        env:
+          DXRN_ORG: ${{ github.event.inputs.dxrn_org }}
+        run: |
+          set -euo pipefail
+          cd workspace/base-kernel
+          while IFS=$'\t' read -r repo branch role dest; do
+            echo "$repo" | grep -Eiq 'kernel_xiaomi_ruby|kernel_xiaomi_mt6877' || continue
+            safe_branch="$(echo "$branch" | tr '/:@ ' '____')"
+            remote_name="${repo}_${safe_branch}"
+            url="https://github.com/${DXRN_ORG}/${repo}.git"
+            echo "== diff ${repo}:${branch} (${role}) ==" | tee "../../artifacts/patches/${remote_name}-diff.log"
+            git remote remove "$remote_name" 2>/dev/null || true
+            git remote add "$remote_name" "$url"
+            git fetch --depth 300 "$remote_name" "$branch" || git fetch "$remote_name" "$branch"
+            REF=FETCH_HEAD
+
+            git diff --stat HEAD..$REF | tee "../../artifacts/patches/${remote_name}-diffstat.log" || true
+            git diff --name-status HEAD..$REF | tee "../../artifacts/patches/${remote_name}-changed-files.log" || true
+            git log --oneline --decorate --grep='KSU\|KernelSU\|SukiSU\|RKSU\|SuSFS\|susfs\|hook\|execve\|manual' HEAD..$REF \
+              | tee "../../artifacts/patches/${remote_name}-keyword-commit-log.log" || true
+
+            git diff --unified=60 HEAD..$REF -- Kconfig Makefile drivers fs include init ipc kernel lib mm security arch/arm64/configs 2>/dev/null \
+              | tee "../../artifacts/patches/${remote_name}-full-relevant-diff.diff" >/dev/null || true
+
+            grep -E -i -C 80 'KernelSU|KSU|ksu_|ksud|CONFIG_KSU|drivers/kernelsu|KernelSU/kernel|security_hook|execve|faccessat|statx|input_handle_event|vfs_read|devpts|sys_reboot|ksu_handle_' \
+              "../../artifacts/patches/${remote_name}-full-relevant-diff.diff" \
+              | tee "../../artifacts/patches/${remote_name}-ksu-context.diff" || true
+
+            grep -E -i -C 80 'SuSFS|SUSFS|susfs|CONFIG_KSU_SUSFS|KPM|KPatch|APatch|sus_path|sus_mount|sus_su|hide_sus|spoof_uname|open_redirect' \
+              "../../artifacts/patches/${remote_name}-full-relevant-diff.diff" \
+              | tee "../../artifacts/patches/${remote_name}-susfs-addon-context.diff" || true
+          done < ../../artifacts/reports/cloned-targets.tsv
+
+      - name: Generate study summary and next-decision checklist
+        shell: bash
+        env:
+          BASE_REPO: ${{ github.event.inputs.base_repo }}
+          BASE_BRANCH: ${{ github.event.inputs.base_branch }}
+        run: |
+          set -euo pipefail
+          KSU_LINES="$(wc -l < artifacts/reports/01-full-ksu-inventory.log 2>/dev/null || echo 0)"
+          SUS_LINES="$(wc -l < artifacts/reports/02-full-susfs-addon-inventory.log 2>/dev/null || echo 0)"
+          MIXED_LINES="$(wc -l < artifacts/reports/03-ksu-susfs-intersection.log 2>/dev/null || echo 0)"
+          cat > artifacts/reports/KSU_SUSFS_STUDY_SUMMARY.md <<EOF
+          # KSU/SuSFS targeted study for ruby AOSP
+
+          This workflow does not patch or build the kernel. It studies the 6 most relevant DXRN repositories and branches to decide which KSU source/branch should be used for the next matrix build.
+
+          ## Base
+          - Base repo: ${BASE_REPO}
+          - Base branch: ${BASE_BRANCH}
+
+          ## Repositories studied
+          - KernelSU-Next
+          - KernelAction
+          - RKSU
+          - KernelSU
+          - aeron_kernel_xiaomi_ruby
+          - moonwake_kernel_xiaomi_ruby
+
+          ## Counts
+          - KSU-related lines: ${KSU_LINES}
+          - SuSFS/addon-related lines: ${SUS_LINES}
+          - Mixed KSU + SuSFS/addon lines: ${MIXED_LINES}
+
+          ## Read first
+          1. reports/latest-commits.tsv
+          2. reports/validated-target-branches.tsv
+          3. reports/01-full-ksu-inventory.log
+          4. reports/02-full-susfs-addon-inventory.log
+          5. reports/03-ksu-susfs-intersection.log
+          6. reports/04-ksu-kconfig-makefile-config-clues.log
+          7. reports/06-hook-clues.log
+          8. patches/*-ksu-context.diff
+          9. patches/*-susfs-addon-context.diff
+
+          ## Decision checklist for applying KSU later
+          - Prefer the newest branch that provides plain KSU without forcing SuSFS.
+          - Verify whether ruby needs manual hooks by reading hook clues and Aeron/MoonWake references.
+          - Keep CONFIG_KSU and required Kconfig/Makefile/hook changes.
+          - Exclude CONFIG_KSU_SUSFS, KSU_SUSFS_*, susfs, sus_path, sus_mount, sus_su, KPM, KPatch and APatch.
+          - Do not modify the already-working vanilla + DroidSpaces build until the KSU branch is selected.
+          EOF
+          sed -i 's/^[[:space:]]*//' artifacts/reports/KSU_SUSFS_STUDY_SUMMARY.md
+
+      - name: Package study artifact
+        shell: bash
+        env:
+          OUTPUT_SUFFIX: ${{ github.event.inputs.output_suffix }}
+        run: |
+          set -euo pipefail
+          cd artifacts
+          find . -maxdepth 4 -type f | sort | tee logs/final-artifacts-tree.log
+          zip -r9 "DXRN-${OUTPUT_SUFFIX}-$(date -u +%Y%m%d-%H%M%S).zip" logs reports raw branches manifests patches
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: DXRN-${{ github.event.inputs.output_suffix }}
+          path: artifacts/
+          retention-days: 30
