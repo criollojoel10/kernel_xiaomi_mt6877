@@ -1,15 +1,15 @@
-name: Build Rubyx DroidSpaces Matrix Vanilla KSU
+name: Build Rubyx AOSP DroidSpaces Matrix KSU
 
 "on":
   workflow_dispatch:
     inputs:
       kernel_repo:
-        description: "Kernel stock/base limpio"
+        description: "Repositorio kernel original RubyxLabs"
         required: true
         default: "RubyxLabs/kernel_xiaomi_mt6877"
         type: string
       kernel_branch:
-        description: "Branch stock/base limpio"
+        description: "Branch base actualizado"
         required: true
         default: "lineage-23.2"
         type: string
@@ -29,7 +29,7 @@ name: Build Rubyx DroidSpaces Matrix Vanilla KSU
         default: "1.0.2"
         type: string
       output_suffix:
-        description: "Sufijo base del ZIP final"
+        description: "Sufijo del ZIP final"
         required: true
         default: "DroidSpaces-AOSP"
         type: string
@@ -61,7 +61,7 @@ jobs:
             variant_suffix: Vanilla-DroidSpaces-AOSP
           - variant: ksu-droidspaces
             root_mode: ksu
-            variant_suffix: KSUNext-DroidSpaces-AOSP
+            variant_suffix: KSU-DroidSpaces-AOSP
 
     steps:
       - name: Prepare and install dependencies
@@ -87,8 +87,8 @@ jobs:
             sudo mkswap "$SWAPFILE"
             sudo swapon "$SWAPFILE"
           fi
-          df -h | tee artifacts/logs/disk-before.log
-          free -h | tee artifacts/logs/memory-before.log
+          df -h | tee artifacts/logs/disk-before-${{ matrix.variant }}.log || true
+          free -h | tee artifacts/logs/memory-before-${{ matrix.variant }}.log || true
 
       - name: Restore clang cache
         uses: actions/cache@v4
@@ -96,7 +96,7 @@ jobs:
           path: toolchains/${{ env.CLANG_VERSION }}
           key: aosp-${{ env.CLANG_VERSION }}-${{ env.CLANG_COMMIT }}-linux-x86
 
-      - name: Download AOSP clang
+      - name: Download AOSP clang if cache missed
         shell: bash
         run: |
           set -euo pipefail
@@ -108,7 +108,7 @@ jobs:
             curl -L --fail --retry 5 --retry-delay 5 "$CLANG_URL" -o "workspace/${CLANG_VERSION}.tar.gz"
             tar -xzf "workspace/${CLANG_VERSION}.tar.gz" -C "$CLANG_DIR"
           fi
-          "$CLANG_DIR/bin/clang" --version | tee artifacts/logs/clang-version.log
+          "$CLANG_DIR/bin/clang" --version | tee artifacts/logs/clang-version-${{ matrix.variant }}.log
 
       - name: Clone clean stock kernel base
         shell: bash
@@ -117,15 +117,15 @@ jobs:
           KERNEL_BRANCH: ${{ github.event.inputs.kernel_branch }}
         run: |
           set -euo pipefail
-          cd workspace
+          cd "$GITHUB_WORKSPACE/workspace"
           git clone --depth 1 --branch "$KERNEL_BRANCH" "https://github.com/${KERNEL_REPO}.git" kernel-clean
           cd kernel-clean
-          git remote -v | tee ../../artifacts/logs/kernel-source-remote.log
-          git rev-parse HEAD | tee ../../artifacts/logs/kernel-source-commit.log
-          git show -s --format='%H%n%cI%n%s' HEAD | tee ../../artifacts/logs/kernel-source-latest.log
-          git log --oneline -20 | tee ../../artifacts/logs/kernel-source-history.log
-          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)' Makefile | tee ../../artifacts/logs/kernel-version.log
-          find arch/arm64/configs -maxdepth 3 -type f -iname '*defconfig' | sort | tee ../../artifacts/logs/available-defconfigs.log
+          git remote -v | tee "$GITHUB_WORKSPACE/artifacts/logs/kernel-source-remote-${{ matrix.variant }}.log"
+          git rev-parse HEAD | tee "$GITHUB_WORKSPACE/artifacts/logs/kernel-source-commit-${{ matrix.variant }}.log"
+          git show -s --format='%H%n%cI%n%s' HEAD | tee "$GITHUB_WORKSPACE/artifacts/logs/kernel-source-latest-${{ matrix.variant }}.log"
+          git log --oneline -20 | tee "$GITHUB_WORKSPACE/artifacts/logs/kernel-source-history-${{ matrix.variant }}.log"
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)' Makefile | tee "$GITHUB_WORKSPACE/artifacts/logs/kernel-version-${{ matrix.variant }}.log"
+          find arch/arm64/configs -maxdepth 3 -type f -iname '*defconfig' | sort | tee "$GITHUB_WORKSPACE/artifacts/logs/available-defconfigs-${{ matrix.variant }}.log"
 
       - name: Download Aeron AnyKernel3 base
         shell: bash
@@ -134,14 +134,14 @@ jobs:
           AERON_TAG: ${{ github.event.inputs.aeron_tag }}
         run: |
           set -euo pipefail
-          cd workspace
+          cd "$GITHUB_WORKSPACE/workspace"
           curl -L --fail -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${AERON_REPO}/releases/tags/${AERON_TAG}" -o aeron-release.json
-          cp aeron-release.json ../artifacts/logs/aeron-release-${AERON_TAG}.json
-          jq -r '.assets[] | "asset: \(.name) url=\(.browser_download_url)"' aeron-release.json | tee ../artifacts/logs/aeron-release-assets.log
+          cp aeron-release.json "$GITHUB_WORKSPACE/artifacts/logs/aeron-release-${AERON_TAG}-${{ matrix.variant }}.json"
+          jq -r '.assets[] | "asset: \(.name) url=\(.browser_download_url)"' aeron-release.json | tee "$GITHUB_WORKSPACE/artifacts/logs/aeron-release-assets-${{ matrix.variant }}.log"
           ZIP_URL="$(jq -r '.assets[] | select(.name | test("\\.zip$"; "i")) | .browser_download_url' aeron-release.json | head -n1)"
           test -n "$ZIP_URL" && test "$ZIP_URL" != null
           curl -L --fail --retry 5 --retry-delay 5 "$ZIP_URL" -o aeron-anykernel-base.zip
-          sha256sum aeron-anykernel-base.zip | tee ../artifacts/logs/aeron-anykernel-base.zip.sha256
+          sha256sum aeron-anykernel-base.zip | tee "$GITHUB_WORKSPACE/artifacts/logs/aeron-anykernel-base-${{ matrix.variant }}.zip.sha256"
 
       - name: Build selected matrix variant
         shell: bash
@@ -153,16 +153,20 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$GITHUB_WORKSPACE/toolchains/$CLANG_VERSION/bin:$PATH"
-          cd workspace
+          export WORKSPACE_DIR="$GITHUB_WORKSPACE/workspace"
+          export ARTIFACTS_DIR="$GITHUB_WORKSPACE/artifacts"
+          export KERNEL_CLEAN="$WORKSPACE_DIR/kernel-clean"
+          mkdir -p "$ARTIFACTS_DIR/logs" "$ARTIFACTS_DIR/zips" "$ARTIFACTS_DIR/source" "$ARTIFACTS_DIR/manifests"
 
-          cat > ../artifacts/manifests/ksu-fallback-order.tsv <<'EOF'
+          cat > "$ARTIFACTS_DIR/manifests/ksu-fallback-order.tsv" <<'EOF'
           repo	branch	label	reason
-          DXRN-MoonWake/KernelSU-Next	stable	ksunext-stable	Primary: DXRN KernelSU-Next stable/current reference
-          DXRN-MoonWake/KernelSU-Next	next-manual-v1.5	ksunext-next-manual-v1.5	Fallback: manual-hook candidate for ruby
-          DXRN-MoonWake/KernelSU-Next	next-susfs	ksunext-next-susfs	Fallback: KSU plus SuSFS/addons if plain KSU fails
-          DXRN-MoonWake/RKSU	new_upstream	rksu-new_upstream	Fallback: DXRN RKSU current upstream reference
-          DXRN-MoonWake/KernelSU	main	kernelsu-main	Fallback: DXRN KernelSU baseline fork
+          DXRN-MoonWake/KernelSU-Next	stable	ksunext-stable	Primary: DXRN KernelSU-Next stable/current reference from study/logs
+          DXRN-MoonWake/KernelSU-Next	next-manual-v1.5	ksunext-next-manual-v1.5	Fallback: DXRN KernelSU-Next manual-hook branch found in study
+          DXRN-MoonWake/KernelSU-Next	next-susfs	ksunext-next-susfs	Fallback: DXRN KernelSU-Next SuSFS/addons branch found in study
+          DXRN-MoonWake/RKSU	new_upstream	rksu-new_upstream	Fallback: DXRN RKSU current upstream branch found in study
+          DXRN-MoonWake/KernelSU	main	kernelsu-main	Fallback: DXRN KernelSU baseline branch found in study
           EOF
+          sed -i 's/^[[:space:]]*//' "$ARTIFACTS_DIR/manifests/ksu-fallback-order.tsv"
 
           make_common_array() {
             MAKE_COMMON=(
@@ -269,32 +273,44 @@ jobs:
               def="$(find "$src/arch/arm64/configs" -maxdepth 3 -type f \( -name '*ruby*defconfig' -o -name '*mt6877*defconfig' \) | sed "s#$src/arch/arm64/configs/##" | sort | head -n1)"
             fi
             if [ -z "$def" ] || [ ! -f "$src/arch/arm64/configs/$def" ]; then
-              echo "ERROR: no se encontró defconfig ruby/mt6877" | tee "../artifacts/logs/${MATRIX_VARIANT}-defconfig-error.log"
-              find "$src/arch/arm64/configs" -maxdepth 3 -type f -iname '*defconfig' | sort | tee -a "../artifacts/logs/${MATRIX_VARIANT}-defconfig-error.log"
+              echo "ERROR: no se encontrÃ³ defconfig ruby/mt6877" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-defconfig-error.log"
+              find "$src/arch/arm64/configs" -maxdepth 3 -type f -iname '*defconfig' | sort | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-defconfig-error.log"
               return 1
             fi
             echo "$def"
           }
 
           apply_ksu_setup() {
-            local repo="$1"
-            local branch="$2"
-            local label="$3"
+            local src="$1"
+            local repo="$2"
+            local branch="$3"
+            local label="$4"
             local setup_url="https://raw.githubusercontent.com/${repo}/${branch}/kernel/setup.sh"
-            echo "== Trying KSU setup: ${repo} ${branch} (${label}) ==" | tee -a "../artifacts/logs/${MATRIX_VARIANT}-ksu-setup.log"
-            curl -L --fail --retry 3 --retry-delay 5 "$setup_url" -o ksu-setup.sh 2>&1 | tee -a "../artifacts/logs/${MATRIX_VARIANT}-ksu-setup.log"
-            bash ksu-setup.sh 2>&1 | tee -a "../artifacts/logs/${MATRIX_VARIANT}-ksu-setup.log"
+            echo "== Trying KSU setup: ${repo} ${branch} (${label}) ==" | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-ksu-setup.log"
+            pushd "$src" >/dev/null
+            curl -L --fail --retry 3 --retry-delay 5 "$setup_url" -o ksu-setup.sh 2>&1 | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-ksu-setup.log"
+            bash ksu-setup.sh 2>&1 | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-ksu-setup.log"
+            find . -maxdepth 4 -type d \( -iname '*kernelsu*' -o -iname '*susfs*' -o -iname '*kpm*' -o -iname '*apatch*' -o -iname '*kpatch*' \) | sort | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-root-framework-dirs.log" || true
+            if [ -d KernelSU-Next/.git ]; then
+              git -C KernelSU-Next rev-parse HEAD | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-kernelsu-next-commit.log"
+              git -C KernelSU-Next show -s --format='%H%n%cI%n%s' HEAD | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-kernelsu-next-latest.log"
+            fi
+            if [ -d KernelSU/.git ]; then
+              git -C KernelSU rev-parse HEAD | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-kernelsu-commit.log"
+              git -C KernelSU show -s --format='%H%n%cI%n%s' HEAD | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-kernelsu-latest.log"
+            fi
+            popd >/dev/null
           }
 
           configure_kernel() {
             local src="$1"
             local root_mode="$2"
             local label="$3"
-            cd "$src"
+            pushd "$src" >/dev/null
             make_common_array
             local defconfig
-            defconfig="$(select_defconfig ".")"
-            echo "DEFCONFIG=${defconfig}" | tee "../../artifacts/logs/${MATRIX_VARIANT}-${label}-selected-defconfig.log"
+            defconfig="$(select_defconfig "$src")"
+            echo "DEFCONFIG=${defconfig}" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-selected-defconfig.log"
             make "${MAKE_COMMON[@]}" "$defconfig"
             scripts/config --file "$OUT_DIR/.config" --set-str LOCALVERSION "-${VARIANT_SUFFIX}-${label}"
             scripts/config --file "$OUT_DIR/.config" --disable LOCALVERSION_AUTO || true
@@ -306,40 +322,37 @@ jobs:
 
             if [ "$root_mode" = "ksu" ]; then
               scripts/config --file "$OUT_DIR/.config" --enable KSU || true
-              scripts/config --file "$OUT_DIR/.config" --enable KSU_MANUAL_HOOK || true
-              scripts/config --file "$OUT_DIR/.config" --enable KSU_LSM_SECURITY_HOOKS || true
-              scripts/config --file "$OUT_DIR/.config" --enable KSU_KPROBES_HOOK || true
-              # For this first KSU build, do not remove addons. If the selected KSU tree exposes SuSFS/KPM symbols,
-              # let olddefconfig decide. The goal is first successful compile/boot/root.
-              scripts/config --file "$OUT_DIR/.config" --enable KSU_SUSFS || true
+              if grep -Rqs 'config KSU_SUSFS' .; then
+                scripts/config --file "$OUT_DIR/.config" --enable KSU_SUSFS || true
+              fi
             fi
 
             make "${MAKE_COMMON[@]}" olddefconfig
-            cp "$OUT_DIR/.config" "../../artifacts/logs/${MATRIX_VARIANT}-${label}-final-kernel.config"
-            grep -E '^CONFIG_KSU|^CONFIG_KPM|^CONFIG_APATCH|^CONFIG_KPATCH|^CONFIG_OVERLAY_FS=|^CONFIG_IPC_NS=|^CONFIG_DEVTMPFS=|^CONFIG_IKCONFIG=' "$OUT_DIR/.config" \
-              | tee "../../artifacts/logs/${MATRIX_VARIANT}-${label}-root-droidspaces-config.log" || true
-            cd ../..
+            cp "$OUT_DIR/.config" "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-final-kernel.config"
+            grep -E '^CONFIG_KSU|^CONFIG_KPM|^CONFIG_APATCH|^CONFIG_KPATCH|^CONFIG_OVERLAY_FS=|^CONFIG_IPC_NS=|^CONFIG_PID_NS=|^CONFIG_NET_NS=|^CONFIG_CGROUPS=|^CONFIG_DEVTMPFS=|^CONFIG_IKCONFIG=' "$OUT_DIR/.config" \
+              | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-root-droidspaces-config.log" || true
+            popd >/dev/null
           }
 
           build_kernel() {
             local src="$1"
             local label="$2"
-            cd "$src"
+            pushd "$src" >/dev/null
             make_common_array
-            make -j"$(nproc --all)" "${MAKE_COMMON[@]}" 2>&1 | tee "../../artifacts/logs/${MATRIX_VARIANT}-${label}-build.log"
+            make -j"$(nproc --all)" "${MAKE_COMMON[@]}" 2>&1 | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-build.log"
             find "$OUT_DIR/arch/arm64/boot" -maxdepth 4 -type f \( -name 'Image' -o -name 'Image.gz' -o -name 'Image.gz-dtb' -o -name '*.dtb' -o -name '*.dtbo' -o -name 'dtbo.img' \) -printf '%p %s bytes\n' \
-              | sort | tee "../../artifacts/logs/${MATRIX_VARIANT}-${label}-build-outputs.log"
+              | sort | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-build-outputs.log"
             test -f "$OUT_DIR/arch/arm64/boot/Image.gz" || test -f "$OUT_DIR/arch/arm64/boot/Image.gz-dtb"
-            cd ../..
+            popd >/dev/null
           }
 
           package_anykernel() {
             local src="$1"
             local label="$2"
-            local ak="anykernel-${MATRIX_VARIANT}-${label}"
+            local ak="$WORKSPACE_DIR/anykernel-${MATRIX_VARIANT}-${label}"
             rm -rf "$ak"
             mkdir -p "$ak"
-            unzip -q aeron-anykernel-base.zip -d "$ak"
+            unzip -q "$WORKSPACE_DIR/aeron-anykernel-base.zip" -d "$ak"
             local kernel_boot="$src/$OUT_DIR/arch/arm64/boot"
             rm -f "$ak"/Image "$ak"/Image.gz "$ak"/Image.gz-dtb "$ak"/*.dtb "$ak"/*.dtbo "$ak"/dtbo.img || true
             [ ! -f "$kernel_boot/Image.gz-dtb" ] || cp "$kernel_boot/Image.gz-dtb" "$ak/Image.gz-dtb"
@@ -354,17 +367,21 @@ jobs:
           Root mode: ${ROOT_MODE}
           Kernel repo: ${{ github.event.inputs.kernel_repo }}
           Kernel branch: ${{ github.event.inputs.kernel_branch }}
+          Defconfig input: ${DEFCONFIG_INPUT}
           Clang: ${CLANG_VERSION} ${CLANG_COMMIT}
           Created UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)
           EOF
             sed -i 's/^[[:space:]]*//' "$ak/build-manifest-${MATRIX_VARIANT}.txt"
-            find "$ak" -maxdepth 4 -type f -printf '%p %s bytes\n' | sort | tee "../artifacts/logs/${MATRIX_VARIANT}-${label}-anykernel-tree.log"
+            find "$ak" -maxdepth 4 -type f -printf '%p %s bytes\n' | sort | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-anykernel-tree.log"
             test -f "$ak/Image.gz" || test -f "$ak/Image.gz-dtb"
 
+            mkdir -p "$ARTIFACTS_DIR/zips"
             local zip_name="Rubyx-${DEVICE_CODENAME}-${VARIANT_SUFFIX}-${label}-$(date -u +%Y%m%d-%H%M%S).zip"
-            (cd "$ak" && zip -r9 "../../artifacts/zips/$zip_name" .)
-            sha256sum "../artifacts/zips/$zip_name" | tee "../artifacts/logs/$zip_name.sha256"
-            echo "$zip_name" | tee "../artifacts/logs/${MATRIX_VARIANT}-selected-output-zip.log"
+            local zip_path="$ARTIFACTS_DIR/zips/$zip_name"
+            (cd "$ak" && zip -r9 "$zip_path" .)
+            test -s "$zip_path"
+            sha256sum "$zip_path" | tee "$ARTIFACTS_DIR/logs/$zip_name.sha256"
+            echo "$zip_name" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-selected-output-zip.log"
           }
 
           run_attempt() {
@@ -372,16 +389,12 @@ jobs:
             local label="$2"
             local repo="${3:-}"
             local branch="${4:-}"
-            local src="kernel-src-${MATRIX_VARIANT}-${label}"
+            local src="$WORKSPACE_DIR/kernel-src-${MATRIX_VARIANT}-${label}"
             rm -rf "$src"
-            rsync -a --delete --exclude='.git' kernel-clean/ "$src/"
+            rsync -a --delete --exclude='.git' "$KERNEL_CLEAN/" "$src/"
             write_droidspaces_fragments "$src"
             if [ "$root_mode" = "ksu" ]; then
-              cd "$src"
-              apply_ksu_setup "$repo" "$branch" "$label"
-              cd ..
-              find "$src" -maxdepth 4 -type d \( -iname '*kernelsu*' -o -iname '*susfs*' -o -iname '*kpm*' -o -iname '*apatch*' -o -iname '*kpatch*' \) \
-                | sort | tee "../artifacts/logs/${MATRIX_VARIANT}-${label}-root-framework-dirs.log" || true
+              apply_ksu_setup "$src" "$repo" "$branch" "$label"
             fi
             configure_kernel "$src" "$root_mode" "$label"
             build_kernel "$src" "$label"
@@ -396,18 +409,18 @@ jobs:
           success=0
           while IFS=$'\t' read -r repo branch label reason; do
             [ "$repo" != "repo" ] || continue
-            echo "== KSU fallback candidate: $repo $branch $label ==" | tee -a "../artifacts/logs/${MATRIX_VARIANT}-fallback.log"
+            echo "== KSU fallback candidate: $repo $branch $label ==" | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-fallback.log"
             if run_attempt ksu "$label" "$repo" "$branch"; then
-              echo -e "${repo}\t${branch}\t${label}\tSUCCESS" | tee "../artifacts/logs/${MATRIX_VARIANT}-selected-ksu-source.tsv"
+              echo -e "${repo}\t${branch}\t${label}\tSUCCESS" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-selected-ksu-source.tsv"
               success=1
               break
             else
-              echo -e "${repo}\t${branch}\t${label}\tFAILED" | tee -a "../artifacts/logs/${MATRIX_VARIANT}-fallback.log"
+              echo -e "${repo}\t${branch}\t${label}\tFAILED" | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-fallback.log"
             fi
-          done < ../artifacts/manifests/ksu-fallback-order.tsv
+          done < "$ARTIFACTS_DIR/manifests/ksu-fallback-order.tsv"
 
           if [ "$success" != "1" ]; then
-            echo "ERROR: all KSU candidates failed" | tee -a "../artifacts/logs/${MATRIX_VARIANT}-fallback.log"
+            echo "ERROR: all KSU candidates failed" | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-fallback.log"
             exit 1
           fi
 
@@ -416,9 +429,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          find artifacts -maxdepth 4 -type f | sort | tee artifacts/logs/final-artifacts-tree-${{ matrix.variant }}.log
-          df -h | tee artifacts/logs/disk-after-${{ matrix.variant }}.log
-          free -h | tee artifacts/logs/memory-after-${{ matrix.variant }}.log
+          find artifacts -maxdepth 5 -type f | sort | tee artifacts/logs/final-artifacts-tree-${{ matrix.variant }}.log
+          df -h | tee artifacts/logs/disk-after-${{ matrix.variant }}.log || true
+          free -h | tee artifacts/logs/memory-after-${{ matrix.variant }}.log || true
 
       - name: Upload artifacts
         if: always()
