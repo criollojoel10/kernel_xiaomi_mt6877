@@ -1,32 +1,32 @@
-name: Build Rubyx AOSP DroidSpaces KSU Strict Fallback V2
+name: Build Rubyx DroidSpaces All Matrix
 
 on:
   workflow_dispatch:
     inputs:
       kernel_repo:
-        description: "Repositorio kernel original RubyxLabs"
+        description: "Kernel base"
         required: true
         default: "RubyxLabs/kernel_xiaomi_mt6877"
         type: string
       kernel_branch:
-        description: "Branch base actualizado"
+        description: "Kernel branch"
         required: true
         default: "lineage-23.2"
         type: string
       defconfig:
-        description: "Defconfig; autodetecta ruby/mt6877 si no existe"
+        description: "Defconfig"
         required: true
         default: "ruby_defconfig"
         type: string
-      aeron_repo:
-        description: "Repo usado solo como base AnyKernel3"
+      aeron_zip_url:
+        description: "Aeron Phoenix zip URL obligatorio para base AnyKernel"
         required: true
-        default: "DXRN-MoonWake/aeron_kernel_xiaomi_ruby"
+        default: "https://github.com/DXRN-MoonWake/aeron_kernel_xiaomi_ruby/releases/download/1.0.2/Aeron-Phoenix-1.0.2-83-9afe3d8-release.zip"
         type: string
-      aeron_tag:
-        description: "Release tag usado como base AnyKernel3"
+      aeron_zip_sha256:
+        description: "SHA256 esperado del zip Aeron"
         required: true
-        default: "1.0.2"
+        default: "e34b549d6b7d0c07e7f2f060aba3ec204e01844391031e15fff934607f315c24"
         type: string
 
 permissions:
@@ -44,19 +44,77 @@ env:
 
 jobs:
   build:
-    name: ${{ matrix.variant }}
+    name: ${{ matrix.short }}-${{ matrix.label }}
     runs-on: ubuntu-22.04
     timeout-minutes: 240
+    continue-on-error: false
     strategy:
       fail-fast: false
       matrix:
         include:
-          - variant: vanilla-droidspaces
-            root_mode: none
-            variant_suffix: Vanilla-DroidSpaces-AOSP
-          - variant: ksu-droidspaces
-            root_mode: ksu
-            variant_suffix: KSU-DroidSpaces-AOSP
+          - label: vanilla
+            short: VNL
+            mode: none
+            repo: none
+            branch: none
+            setup_arg: ""
+            suffix: VNL
+          - label: aeron-main-susfs
+            short: AEKSU
+            mode: aeron_patch
+            repo: DXRN-MoonWake/aeron_kernel_xiaomi_ruby
+            branch: ksu_susfs
+            setup_arg: ""
+            suffix: AKSU
+          - label: rksu-new-upstream
+            short: RKSU
+            mode: setup
+            repo: DXRN-MoonWake/RKSU
+            branch: new_upstream
+            setup_arg: ""
+            suffix: RKSU
+          - label: dxrn-kernelsu-main
+            short: DKSU
+            mode: setup
+            repo: DXRN-MoonWake/KernelSU
+            branch: main
+            setup_arg: ""
+            suffix: DKSU
+          - label: rsuntk-kernelsu-main
+            short: RSKU
+            mode: setup
+            repo: rsuntk/KernelSU
+            branch: main
+            setup_arg: ""
+            suffix: RSKU
+          - label: ksunext-legacy
+            short: KSLG
+            mode: setup
+            repo: KernelSU-Next/KernelSU-Next
+            branch: next
+            setup_arg: legacy
+            suffix: KSLG
+          - label: dxrn-ksunext-manual15
+            short: KSM15
+            mode: setup
+            repo: DXRN-MoonWake/KernelSU-Next
+            branch: next-manual-v1.5
+            setup_arg: ""
+            suffix: KM15
+          - label: dxrn-ksunext-susfs
+            short: KSSUS
+            mode: setup
+            repo: DXRN-MoonWake/KernelSU-Next
+            branch: next-susfs
+            setup_arg: ""
+            suffix: KSUS
+          - label: dxrn-ksunext-stable
+            short: KSST
+            mode: setup
+            repo: DXRN-MoonWake/KernelSU-Next
+            branch: stable
+            setup_arg: ""
+            suffix: KSST
 
     steps:
       - name: Prepare dependencies
@@ -79,8 +137,8 @@ jobs:
             sudo mkswap "$SWAPFILE"
             sudo swapon "$SWAPFILE"
           fi
-          df -h | tee artifacts/logs/disk-before-${{ matrix.variant }}.log || true
-          free -h | tee artifacts/logs/memory-before-${{ matrix.variant }}.log || true
+          df -h | tee artifacts/logs/disk-before-${{ matrix.label }}.log || true
+          free -h | tee artifacts/logs/memory-before-${{ matrix.label }}.log || true
 
       - name: Restore clang cache
         uses: actions/cache@v4
@@ -100,7 +158,7 @@ jobs:
             curl -L --fail --retry 5 --retry-delay 5 "$CLANG_URL" -o "workspace/${CLANG_VERSION}.tar.gz"
             tar -xzf "workspace/${CLANG_VERSION}.tar.gz" -C "$CLANG_DIR"
           fi
-          "$CLANG_DIR/bin/clang" --version | tee artifacts/logs/clang-version-${{ matrix.variant }}.log
+          "$CLANG_DIR/bin/clang" --version | tee artifacts/logs/clang-version-${{ matrix.label }}.log
 
       - name: Clone stock kernel
         shell: bash
@@ -110,68 +168,80 @@ jobs:
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/workspace"
-          git clone --depth 1 --branch "$KERNEL_BRANCH" "https://github.com/${KERNEL_REPO}.git" kernel-clean
-          cd kernel-clean
-          git remote -v | tee "$GITHUB_WORKSPACE/artifacts/logs/kernel-source-remote-${{ matrix.variant }}.log"
-          git rev-parse HEAD | tee "$GITHUB_WORKSPACE/artifacts/logs/kernel-source-commit-${{ matrix.variant }}.log"
-          git show -s --format='%H%n%cI%n%s' HEAD | tee "$GITHUB_WORKSPACE/artifacts/logs/kernel-source-latest-${{ matrix.variant }}.log"
-          git log --oneline -30 | tee "$GITHUB_WORKSPACE/artifacts/logs/kernel-source-history-${{ matrix.variant }}.log"
-          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)' Makefile | tee "$GITHUB_WORKSPACE/artifacts/logs/kernel-version-${{ matrix.variant }}.log"
-          find arch/arm64/configs -maxdepth 3 -type f -iname '*defconfig' | sort | tee "$GITHUB_WORKSPACE/artifacts/logs/available-defconfigs-${{ matrix.variant }}.log"
+          git clone --depth 1 --branch "$KERNEL_BRANCH" "https://github.com/${KERNEL_REPO}.git" kernel-src
+          cd kernel-src
+          git remote -v | tee "$GITHUB_WORKSPACE/artifacts/logs/kernel-source-remote-${{ matrix.label }}.log"
+          git rev-parse HEAD | tee "$GITHUB_WORKSPACE/artifacts/logs/kernel-source-commit-${{ matrix.label }}.log"
+          git show -s --format='%H%n%cI%n%s' HEAD | tee "$GITHUB_WORKSPACE/artifacts/logs/kernel-source-latest-${{ matrix.label }}.log"
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)' Makefile | tee "$GITHUB_WORKSPACE/artifacts/logs/kernel-version-${{ matrix.label }}.log"
+          find arch/arm64/configs -maxdepth 3 -type f -iname '*defconfig' | sort | tee "$GITHUB_WORKSPACE/artifacts/logs/available-defconfigs-${{ matrix.label }}.log"
 
-      - name: Download Aeron AnyKernel3 base
+      - name: Force download Aeron Phoenix AnyKernel base
         shell: bash
         env:
-          AERON_REPO: ${{ github.event.inputs.aeron_repo }}
-          AERON_TAG: ${{ github.event.inputs.aeron_tag }}
+          AERON_ZIP_URL: ${{ github.event.inputs.aeron_zip_url }}
+          AERON_ZIP_SHA256: ${{ github.event.inputs.aeron_zip_sha256 }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/workspace"
-          curl -L --fail -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${AERON_REPO}/releases/tags/${AERON_TAG}" -o aeron-release.json
-          cp aeron-release.json "$GITHUB_WORKSPACE/artifacts/logs/aeron-release-${AERON_TAG}-${{ matrix.variant }}.json"
-          jq -r '.assets[] | "asset: \(.name) url=\(.browser_download_url)"' aeron-release.json | tee "$GITHUB_WORKSPACE/artifacts/logs/aeron-release-assets-${{ matrix.variant }}.log"
-          ZIP_URL="$(jq -r '.assets[] | select(.name | test("\\.zip$"; "i")) | .browser_download_url' aeron-release.json | head -n1)"
-          test -n "$ZIP_URL" && test "$ZIP_URL" != null
-          curl -L --fail --retry 5 --retry-delay 5 "$ZIP_URL" -o aeron-anykernel-base.zip
-          sha256sum aeron-anykernel-base.zip | tee "$GITHUB_WORKSPACE/artifacts/logs/aeron-anykernel-base-${{ matrix.variant }}.zip.sha256"
+          rm -f aeron-anykernel-base.zip
+          echo "Forced Aeron ZIP URL: ${AERON_ZIP_URL}" | tee "$GITHUB_WORKSPACE/artifacts/logs/aeron-forced-url-${{ matrix.label }}.log"
+          ok=0
+          for i in $(seq 1 30); do
+            echo "Aeron ZIP download attempt ${i}/30" | tee -a "$GITHUB_WORKSPACE/artifacts/logs/aeron-download-${{ matrix.label }}.log"
+            rm -f aeron-anykernel-base.zip
+            set +e
+            curl -L --fail --connect-timeout 30 --retry 5 --retry-delay 10 --retry-all-errors \
+              -H "User-Agent: Mozilla/5.0 GitHubActions RubyxMatrix" \
+              -H "Accept: application/octet-stream" \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              "$AERON_ZIP_URL" -o aeron-anykernel-base.zip
+            rc=$?
+            set -e
+            if [ "$rc" = "0" ] && [ -s aeron-anykernel-base.zip ] && unzip -tq aeron-anykernel-base.zip >/dev/null 2>&1; then
+              echo "${AERON_ZIP_SHA256}  aeron-anykernel-base.zip" | sha256sum -c -
+              ok=1
+              break
+            fi
+            echo "Aeron download failed rc=${rc}; retrying..." | tee -a "$GITHUB_WORKSPACE/artifacts/logs/aeron-download-${{ matrix.label }}.log"
+            sleep 20
+          done
+          if [ "$ok" != "1" ]; then
+            echo "ERROR: forced Aeron ZIP download failed after all retries" | tee "$GITHUB_WORKSPACE/artifacts/logs/aeron-download-failed-${{ matrix.label }}.log"
+            exit 1
+          fi
+          unzip -l aeron-anykernel-base.zip | tee "$GITHUB_WORKSPACE/artifacts/logs/aeron-anykernel-base-list-${{ matrix.label }}.log"
+          sha256sum aeron-anykernel-base.zip | tee "$GITHUB_WORKSPACE/artifacts/logs/aeron-anykernel-base-${{ matrix.label }}.zip.sha256"
 
-      - name: Build variant with strict fallback
+      - name: Integrate, build and package matrix item
         shell: bash
         env:
           DEFCONFIG_INPUT: ${{ github.event.inputs.defconfig }}
-          MATRIX_VARIANT: ${{ matrix.variant }}
-          ROOT_MODE: ${{ matrix.root_mode }}
-          VARIANT_SUFFIX: ${{ matrix.variant_suffix }}
           KERNEL_REPO_INPUT: ${{ github.event.inputs.kernel_repo }}
           KERNEL_BRANCH_INPUT: ${{ github.event.inputs.kernel_branch }}
+          MATRIX_LABEL: ${{ matrix.label }}
+          MATRIX_SHORT: ${{ matrix.short }}
+          MATRIX_MODE: ${{ matrix.mode }}
+          MATRIX_REPO: ${{ matrix.repo }}
+          MATRIX_BRANCH: ${{ matrix.branch }}
+          MATRIX_SETUP_ARG: ${{ matrix.setup_arg }}
+          MATRIX_SUFFIX: ${{ matrix.suffix }}
         run: |
           set -euo pipefail
           export PATH="$GITHUB_WORKSPACE/toolchains/$CLANG_VERSION/bin:$PATH"
           export WORKSPACE_DIR="$GITHUB_WORKSPACE/workspace"
+          export SRC="$WORKSPACE_DIR/kernel-src"
           export ARTIFACTS_DIR="$GITHUB_WORKSPACE/artifacts"
-          export KERNEL_CLEAN="$WORKSPACE_DIR/kernel-clean"
-          mkdir -p "$ARTIFACTS_DIR/logs" "$ARTIFACTS_DIR/zips" "$ARTIFACTS_DIR/source" "$ARTIFACTS_DIR/manifests"
-
-          cat > "$ARTIFACTS_DIR/manifests/ksu-fallback-order.tsv" <<'EOF'
-          mode	repo	branch	label	reason
-          aeron-patch	DXRN-MoonWake/aeron_kernel_xiaomi_ruby	ksu_susfs	aeron-kernelsu-main-susfs	Same Rubyx base with KernelSU main and SuSFS already integrated
-          setup	DXRN-MoonWake/RKSU	new_upstream	rksu-new_upstream	RKSU fork for old/new kernels
-          setup	DXRN-MoonWake/KernelSU	main	dxrn-kernelsu-main	DXRN KernelSU main baseline
-          setup	rsuntk/KernelSU	main	rsuntk-kernelsu-main	KernelSU-main style fallback for non-GKI/old kernels
-          setup	KernelSU-Next/KernelSU-Next	next	ksunext-legacy	Upstream KSUNext legacy mode
-          setup	DXRN-MoonWake/KernelSU-Next	next-manual-v1.5	ksunext-next-manual-v1.5	DXRN KSUNext manual hook candidate
-          setup	DXRN-MoonWake/KernelSU-Next	next-susfs	ksunext-next-susfs	DXRN KSUNext SuSFS candidate
-          setup	DXRN-MoonWake/KernelSU-Next	stable	ksunext-stable	Last resort with compat shim
-          EOF
+          cd "$SRC"
 
           make_common_array() {
             MAKE_COMMON=(O="$OUT_DIR" ARCH=arm64 SUBARCH=arm64 CC="ccache clang" LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1)
           }
 
           write_droidspaces_fragments() {
-            local src="$1"
-            mkdir -p "$src/arch/arm64/configs/vendor"
-            cat > "$src/arch/arm64/configs/vendor/droidspaces.config" <<'EOF'
+            mkdir -p arch/arm64/configs/vendor
+            cat > arch/arm64/configs/vendor/droidspaces.config <<'EOF'
           CONFIG_SYSCTL=y
           CONFIG_SYSVIPC=y
           CONFIG_POSIX_MQUEUE=y
@@ -236,7 +306,7 @@ jobs:
           CONFIG_BPF_JIT=y
           CONFIG_ANDROID_PARANOID_NETWORK=n
           EOF
-            cat > "$src/arch/arm64/configs/vendor/no-root-frameworks.config" <<'EOF'
+            cat > arch/arm64/configs/vendor/no-root-frameworks.config <<'EOF'
           # CONFIG_KSU is not set
           # CONFIG_KSU_SUSFS is not set
           # CONFIG_KPM is not set
@@ -244,184 +314,172 @@ jobs:
           }
 
           select_defconfig() {
-            local src="$1" def="$DEFCONFIG_INPUT"
-            if [ ! -f "$src/arch/arm64/configs/$def" ]; then
-              def="$(find "$src/arch/arm64/configs" -maxdepth 3 -type f \( -name '*ruby*defconfig' -o -name '*mt6877*defconfig' \) | sed "s#$src/arch/arm64/configs/##" | sort | head -n1)"
+            local def="$DEFCONFIG_INPUT"
+            if [ ! -f "arch/arm64/configs/$def" ]; then
+              def="$(find arch/arm64/configs -maxdepth 3 -type f \( -name '*ruby*defconfig' -o -name '*mt6877*defconfig' \) | sed 's#arch/arm64/configs/##' | sort | head -n1)"
             fi
-            test -n "$def" && test -f "$src/arch/arm64/configs/$def" || { echo "ERROR: no defconfig" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-defconfig-error.log"; return 1; }
+            test -n "$def" && test -f "arch/arm64/configs/$def" || { echo "ERROR: no defconfig" | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-defconfig-error.log"; exit 1; }
             echo "$def"
           }
 
-          audit_remote_branch() {
-            local repo="$1" branch="$2" label="$3"
-            { echo "Repo: $repo"; echo "Branch: $branch"; echo "Label: $label"; git ls-remote "https://github.com/${repo}.git" "refs/heads/${branch}" || true; git ls-remote --tags "https://github.com/${repo}.git" | tail -50 || true; } | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-remote-audit.log"
-          }
+          symbol_exists() { local sym="$1"; grep -Rqs "^[[:space:]]*config[[:space:]]\+${sym}$" Kconfig drivers fs kernel security arch/arm64 2>/dev/null; }
+          enable_if_exists() { local cfg="$1" sym="${cfg#CONFIG_}"; if symbol_exists "$sym"; then scripts/config --file "$OUT_DIR/.config" --enable "$sym" || true; echo "$cfg enabled"; else echo "$cfg skipped"; fi | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-config-symbols.log"; }
 
-          apply_setup_ksu() {
-            local src="$1" repo="$2" branch="$3" label="$4"
-            pushd "$src" >/dev/null
-            curl -L --fail --retry 3 --retry-delay 5 "https://raw.githubusercontent.com/${repo}/${branch}/kernel/setup.sh" -o ksu-setup.sh 2>&1 | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-ksu-setup.log"
-            if [ "$label" = "ksunext-legacy" ]; then
-              bash ksu-setup.sh legacy 2>&1 | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-ksu-setup.log"
-            else
-              bash ksu-setup.sh 2>&1 | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-ksu-setup.log"
+          audit_remote() {
+            if [ "$MATRIX_MODE" != "none" ]; then
+              { echo "repo=${MATRIX_REPO}"; echo "branch=${MATRIX_BRANCH}"; git ls-remote "https://github.com/${MATRIX_REPO}.git" "refs/heads/${MATRIX_BRANCH}" || true; } | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-remote-audit.log"
             fi
-            popd >/dev/null
           }
 
-          apply_aeron_ksu_susfs_patch() {
-            local src="$1" repo="$2" branch="$3" label="$4"
-            local audit="$WORKSPACE_DIR/aeron-audit-${label}" patchfile="$ARTIFACTS_DIR/source/${MATRIX_VARIANT}-${label}-aeron-kernelsu-main-susfs-filtered.patch"
+          apply_aeron_patch() {
+            local audit="$WORKSPACE_DIR/aeron-audit-${MATRIX_LABEL}"
+            local patchfile="$ARTIFACTS_DIR/source/${MATRIX_LABEL}-aeron-filtered.patch"
             rm -rf "$audit"
-            git clone --depth 500 --branch "$branch" "https://github.com/${repo}.git" "$audit"
+            git clone --depth 500 --branch "$MATRIX_BRANCH" "https://github.com/${MATRIX_REPO}.git" "$audit"
             pushd "$audit" >/dev/null
             git remote add stock "https://github.com/${KERNEL_REPO_INPUT}.git" || true
             git fetch stock "$KERNEL_BRANCH_INPUT" --depth 500 || true
-            git rev-parse HEAD | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-aeron-head.log"
-            git show -s --format='%H%n%cI%n%s' HEAD | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-aeron-latest.log"
-            git log --oneline --all --grep='KSU\|KernelSU\|SuSFS\|susfs\|selinux\|ksu_module\|umount\|hook' | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-aeron-related-commits.log" || true
-            git diff --name-status "stock/${KERNEL_BRANCH_INPUT}...HEAD" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-aeron-vs-stock-name-status.log" || true
-            git diff --stat "stock/${KERNEL_BRANCH_INPUT}...HEAD" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-aeron-vs-stock-diffstat.log" || true
+            git rev-parse HEAD | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-aeron-head.log"
+            git log --oneline --all --grep='KSU\|KernelSU\|SuSFS\|susfs\|selinux\|ksu_module\|umount\|hook' | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-aeron-related-commits.log" || true
+            git diff --stat "stock/${KERNEL_BRANCH_INPUT}...HEAD" | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-aeron-vs-stock-diffstat.log" || true
             git diff "stock/${KERNEL_BRANCH_INPUT}...HEAD" -- drivers/kernelsu drivers/Makefile drivers/Kconfig fs/exec.c fs/open.c fs/read_write.c fs/stat.c fs/namespace.c fs/namei.c fs/proc include/linux kernel security/selinux security/commoncap.c mm net arch/arm64/configs > "$patchfile" || true
             popd >/dev/null
-            test -s "$patchfile" || { echo "ERROR: Aeron filtered patch empty" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-aeron-patch-error.log"; return 1; }
-            pushd "$src" >/dev/null
-            patch -p1 --dry-run < "$patchfile" > "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-aeron-patch-dry-run.log" 2>&1 || { cat "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-aeron-patch-dry-run.log"; popd >/dev/null; return 1; }
-            patch -p1 < "$patchfile" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-aeron-patch-apply.log"
-            popd >/dev/null
+            test -s "$patchfile" || { echo "ERROR: Aeron filtered patch empty" | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-aeron-patch-error.log"; exit 1; }
+            patch -p1 --dry-run < "$patchfile" > "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-aeron-patch-dry-run.log" 2>&1 || { cat "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-aeron-patch-dry-run.log"; exit 1; }
+            patch -p1 < "$patchfile" | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-aeron-patch-apply.log"
           }
 
-          audit_integrated_ksu() {
-            local src="$1" label="$4"
-            find "$src" -maxdepth 4 -type d \( -iname '*kernelsu*' -o -iname '*susfs*' -o -iname '*kpm*' -o -iname '*kpatch*' \) | sort | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-integrated-tree.log" || true
-            for d in "$src"/KernelSU "$src"/KernelSU-Next "$src"/RKSU "$src"/drivers/kernelsu; do
-              if [ -d "$d/.git" ]; then
-                { git -C "$d" remote -v; git -C "$d" rev-parse HEAD; git -C "$d" show -s --format='%H%n%cI%n%s' HEAD; git -C "$d" log --oneline -20; } | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-integrated-git.log" || true
-              fi
-            done
+          apply_setup_ksu() {
+            curl -L --fail --retry 5 --retry-delay 5 "https://raw.githubusercontent.com/${MATRIX_REPO}/${MATRIX_BRANCH}/kernel/setup.sh" -o ksu-setup.sh 2>&1 | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-ksu-setup-download.log"
+            if [ -n "$MATRIX_SETUP_ARG" ]; then
+              bash ksu-setup.sh "$MATRIX_SETUP_ARG" 2>&1 | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-ksu-setup.log"
+            else
+              bash ksu-setup.sh 2>&1 | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-ksu-setup.log"
+            fi
           }
 
-          symbol_exists() { local src="$1" sym="$2"; grep -Rqs "^[[:space:]]*config[[:space:]]\+${sym}$" "$src"/Kconfig "$src"/drivers "$src"/fs "$src"/kernel "$src"/security "$src"/arch/arm64 2>/dev/null; }
-          enable_if_exists() { local src="$1" cfg="$2" sym="${cfg#CONFIG_}"; if symbol_exists "$src" "$sym"; then scripts/config --file "$OUT_DIR/.config" --enable "$sym" || true; echo "$cfg enabled"; else echo "$cfg skipped"; fi | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-config-symbols.log"; }
-
-          apply_ksu_compat_patches() {
-            local src="$1" label="$2"
-            pushd "$src" >/dev/null
+          apply_compat_patches() {
             if grep -Rqs "copy_to_kernel_nofault" drivers/kernelsu KernelSU-Next/kernel KernelSU/kernel 2>/dev/null && ! grep -Rqs "copy_to_kernel_nofault" include kernel mm arch 2>/dev/null; then
               target_file="$(grep -Rsl "copy_to_kernel_nofault" drivers/kernelsu KernelSU-Next/kernel KernelSU/kernel 2>/dev/null | head -n1)"
               if [ -n "$target_file" ]; then
                 cp "$target_file" "$target_file.before-copy_to_kernel_nofault-compat" || true
                 grep -q '^#include <linux/uaccess.h>' "$target_file" || sed -i '1i#include <linux/uaccess.h>' "$target_file"
                 sed -i 's/copy_to_kernel_nofault/probe_kernel_write/g' "$target_file"
-                echo "Patched $target_file: copy_to_kernel_nofault -> probe_kernel_write" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-compat-patches.log"
+                echo "Patched $target_file: copy_to_kernel_nofault -> probe_kernel_write" | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-compat-patches.log"
               fi
             fi
-            popd >/dev/null
           }
 
-          configure_kernel() {
-            local src="$1" root_mode="$2" label="$3"
-            pushd "$src" >/dev/null
-            make_common_array
-            defconfig="$(select_defconfig "$src")"
-            echo "DEFCONFIG=${defconfig}" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-selected-defconfig.log"
-            make "${MAKE_COMMON[@]}" "$defconfig"
-            scripts/config --file "$OUT_DIR/.config" --set-str LOCALVERSION "-${VARIANT_SUFFIX}-${label}"
-            scripts/config --file "$OUT_DIR/.config" --disable LOCALVERSION_AUTO || true
-            [ "$root_mode" != "none" ] || scripts/kconfig/merge_config.sh -m -O "$OUT_DIR" "$OUT_DIR/.config" arch/arm64/configs/vendor/no-root-frameworks.config
-            scripts/kconfig/merge_config.sh -m -O "$OUT_DIR" "$OUT_DIR/.config" arch/arm64/configs/vendor/droidspaces.config
-            if [ "$root_mode" = "ksu" ]; then
-              for cfg in CONFIG_KSU CONFIG_KSU_MANUAL_HOOK CONFIG_KSU_KPROBE_HOOKS CONFIG_KSU_KPROBES_HOOK CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_TRY_UMOUNT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL; do enable_if_exists "$src" "$cfg"; done
-            fi
-            make "${MAKE_COMMON[@]}" olddefconfig
-            cp "$OUT_DIR/.config" "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-final-kernel.config"
-            grep -E '^CONFIG_KSU|^CONFIG_KPM|^CONFIG_KALLSYMS|^CONFIG_OVERLAY_FS=|^CONFIG_IPC_NS=|^CONFIG_PID_NS=|^CONFIG_NET_NS=|^CONFIG_CGROUPS=|^CONFIG_DEVTMPFS=|^CONFIG_IKCONFIG=' "$OUT_DIR/.config" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-root-droidspaces-config.log" || true
-            popd >/dev/null
-          }
+          write_droidspaces_fragments
+          audit_remote
+          if [ "$MATRIX_MODE" = "aeron_patch" ]; then
+            apply_aeron_patch
+          elif [ "$MATRIX_MODE" = "setup" ]; then
+            apply_setup_ksu
+          fi
+          apply_compat_patches
 
-          build_kernel_strict() {
-            local src="$1" label="$2"
-            pushd "$src" >/dev/null
-            make_common_array
-            set +e
-            make -j"$(nproc --all)" "${MAKE_COMMON[@]}" 2>&1 | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-build.log"
-            rc=${PIPESTATUS[0]}
-            set -e
-            [ "$rc" = "0" ] || { echo "ERROR: make failed rc=$rc" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-build-error.log"; popd >/dev/null; return 1; }
-            boot="$OUT_DIR/arch/arm64/boot"
-            find "$boot" -maxdepth 4 -type f \( -name 'Image' -o -name 'Image.gz' -o -name 'Image.gz-dtb' -o -name '*.dtb' -o -name '*.dtbo' -o -name 'dtbo.img' \) -printf '%p %s bytes\n' | sort | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-build-outputs.log"
-            [ -s "$boot/Image.gz" ] || [ -s "$boot/Image.gz-dtb" ] || { echo "ERROR: kernel image missing" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-missing-image.log"; popd >/dev/null; return 1; }
-            popd >/dev/null
-          }
+          make_common_array
+          DEFCONFIG="$(select_defconfig)"
+          echo "DEFCONFIG=${DEFCONFIG}" | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-selected-defconfig.log"
+          make "${MAKE_COMMON[@]}" "$DEFCONFIG"
 
-          package_anykernel_strict() {
-            local src="$1" label="$2" ak="$WORKSPACE_DIR/anykernel-${MATRIX_VARIANT}-${label}" kernel_boot="$src/$OUT_DIR/arch/arm64/boot"
-            [ -s "$kernel_boot/Image.gz" ] || [ -s "$kernel_boot/Image.gz-dtb" ] || return 1
-            rm -rf "$ak"; mkdir -p "$ak"; unzip -q "$WORKSPACE_DIR/aeron-anykernel-base.zip" -d "$ak"
-            rm -f "$ak"/Image "$ak"/Image.gz "$ak"/Image.gz-dtb "$ak"/*.dtb "$ak"/*.dtbo "$ak"/dtbo.img || true
-            [ ! -s "$kernel_boot/Image.gz-dtb" ] || cp "$kernel_boot/Image.gz-dtb" "$ak/Image.gz-dtb"
-            [ ! -s "$kernel_boot/Image.gz" ] || cp "$kernel_boot/Image.gz" "$ak/Image.gz"
-            [ ! -s "$kernel_boot/Image" ] || cp "$kernel_boot/Image" "$ak/Image"
-            [ ! -s "$kernel_boot/dtbo.img" ] || cp "$kernel_boot/dtbo.img" "$ak/dtbo.img"
-            find "$kernel_boot/dts" -type f \( -name '*.dtb' -o -name '*.dtbo' \) -exec cp -f {} "$ak/" \; 2>/dev/null || true
-            echo -e "Variant: ${MATRIX_VARIANT}\nLabel: ${label}\nRoot mode: ${ROOT_MODE}\nKernel repo: ${KERNEL_REPO_INPUT}\nKernel branch: ${KERNEL_BRANCH_INPUT}\nCreated UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$ak/build-manifest-${MATRIX_VARIANT}.txt"
-            find "$ak" -maxdepth 4 -type f -printf '%p %s bytes\n' | sort | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-anykernel-tree.log"
-            [ -s "$ak/Image.gz" ] || [ -s "$ak/Image.gz-dtb" ] || return 1
-            zip_name="Rubyx-${DEVICE_CODENAME}-${VARIANT_SUFFIX}-${label}-$(date -u +%Y%m%d-%H%M%S).zip"
-            zip_path="$ARTIFACTS_DIR/zips/$zip_name"
-            (cd "$ak" && zip -r9 "$zip_path" .)
-            unzip -l "$zip_path" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-zip-list.log"
-            unzip -l "$zip_path" | grep -Eq 'Image\.gz|Image\.gz-dtb' || { rm -f "$zip_path"; return 1; }
-            zip_size="$(stat -c%s "$zip_path")"
-            echo "$zip_size bytes" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-zip-size.log"
-            [ "$zip_size" -ge 10000000 ] || { echo "ERROR: zip too small" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-${label}-zip-too-small.log"; rm -f "$zip_path"; return 1; }
-            sha256sum "$zip_path" | tee "$ARTIFACTS_DIR/logs/$zip_name.sha256"
-            echo "$zip_name" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-selected-output-zip.log"
-          }
+          # Keep UTS_RELEASE short. This fixes the >64-char error seen with Aeron localversion.
+          scripts/config --file "$OUT_DIR/.config" --set-str LOCALVERSION "-DS-${MATRIX_SUFFIX}"
+          scripts/config --file "$OUT_DIR/.config" --disable LOCALVERSION_AUTO || true
 
-          run_attempt() {
-            local mode="$1" root_mode="$2" repo="$3" branch="$4" label="$5" src="$WORKSPACE_DIR/kernel-src-${MATRIX_VARIANT}-${label}"
-            rm -rf "$src"
-            rsync -a --delete --exclude='.git' "$KERNEL_CLEAN/" "$src/"
-            write_droidspaces_fragments "$src"
-            if [ "$root_mode" = "ksu" ]; then
-              audit_remote_branch "$repo" "$branch" "$label"
-              if [ "$mode" = "aeron-patch" ]; then apply_aeron_ksu_susfs_patch "$src" "$repo" "$branch" "$label"; else apply_setup_ksu "$src" "$repo" "$branch" "$label"; fi
-              audit_integrated_ksu "$src" "$repo" "$branch" "$label"
-              apply_ksu_compat_patches "$src" "$label"
-            fi
-            configure_kernel "$src" "$root_mode" "$label"
-            build_kernel_strict "$src" "$label"
-            package_anykernel_strict "$src" "$label"
-          }
+          if [ "$MATRIX_MODE" = "none" ]; then
+            scripts/kconfig/merge_config.sh -m -O "$OUT_DIR" "$OUT_DIR/.config" arch/arm64/configs/vendor/no-root-frameworks.config
+          fi
+          scripts/kconfig/merge_config.sh -m -O "$OUT_DIR" "$OUT_DIR/.config" arch/arm64/configs/vendor/droidspaces.config
 
-          if [ "$ROOT_MODE" = "none" ]; then run_attempt none none local vanilla vanilla; exit 0; fi
-          success=0
-          while IFS=$'\t' read -r mode repo branch label reason; do
-            [ "$mode" != "mode" ] || continue
-            echo "== KSU candidate: $mode $repo $branch $label ==" | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-fallback.log"
-            if run_attempt "$mode" ksu "$repo" "$branch" "$label"; then
-              echo -e "${mode}\t${repo}\t${branch}\t${label}\tSUCCESS" | tee "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-selected-ksu-source.tsv"
-              success=1; break
-            else
-              echo -e "${mode}\t${repo}\t${branch}\t${label}\tFAILED" | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-fallback.log"
-            fi
-          done < "$ARTIFACTS_DIR/manifests/ksu-fallback-order.tsv"
-          [ "$success" = "1" ] || { echo "ERROR: all KSU candidates failed" | tee -a "$ARTIFACTS_DIR/logs/${MATRIX_VARIANT}-fallback.log"; exit 1; }
+          if [ "$MATRIX_MODE" != "none" ]; then
+            for cfg in CONFIG_KSU CONFIG_KSU_MANUAL_HOOK CONFIG_KSU_KPROBE_HOOKS CONFIG_KSU_KPROBES_HOOK CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_TRY_UMOUNT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL; do
+              enable_if_exists "$cfg"
+            done
+          fi
+
+          make "${MAKE_COMMON[@]}" olddefconfig
+          cp "$OUT_DIR/.config" "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-final-kernel.config"
+          grep -E '^CONFIG_KSU|^CONFIG_KPM|^CONFIG_KALLSYMS|^CONFIG_OVERLAY_FS=|^CONFIG_IPC_NS=|^CONFIG_PID_NS=|^CONFIG_NET_NS=|^CONFIG_CGROUPS=|^CONFIG_DEVTMPFS=|^CONFIG_IKCONFIG=' "$OUT_DIR/.config" | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-key-config.log" || true
+
+          # Sanity-check UTS length before full build.
+          make "${MAKE_COMMON[@]}" include/generated/utsrelease.h 2>&1 | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-utsrelease.log"
+          UTS="$(sed -n 's/^#define UTS_RELEASE "\(.*\)"/\1/p' "$OUT_DIR/include/generated/utsrelease.h" | head -n1)"
+          echo "UTS_RELEASE=${UTS}" | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-utsrelease-value.log"
+          if [ "${#UTS}" -gt 64 ]; then
+            echo "ERROR: UTS_RELEASE too long: ${#UTS} chars" | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-utsrelease-too-long.log"
+            exit 1
+          fi
+
+          set +e
+          make -j"$(nproc --all)" "${MAKE_COMMON[@]}" 2>&1 | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-build.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" != "0" ]; then
+            echo "ERROR: make failed rc=${rc}" | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-build-error.log"
+            exit 1
+          fi
+
+          BOOT="$OUT_DIR/arch/arm64/boot"
+          find "$BOOT" -maxdepth 4 -type f \( -name 'Image' -o -name 'Image.gz' -o -name 'Image.gz-dtb' -o -name '*.dtb' -o -name '*.dtbo' -o -name 'dtbo.img' \) -printf '%p %s bytes\n' | sort | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-build-outputs.log"
+          [ -s "$BOOT/Image.gz" ] || [ -s "$BOOT/Image.gz-dtb" ] || { echo "ERROR: kernel image missing" | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-missing-image.log"; exit 1; }
+
+          AK="$WORKSPACE_DIR/anykernel-${MATRIX_LABEL}"
+          rm -rf "$AK"
+          mkdir -p "$AK"
+          unzip -q "$WORKSPACE_DIR/aeron-anykernel-base.zip" -d "$AK"
+          rm -f "$AK"/Image "$AK"/Image.gz "$AK"/Image.gz-dtb "$AK"/*.dtb "$AK"/*.dtbo "$AK"/dtbo.img || true
+          [ ! -s "$BOOT/Image.gz-dtb" ] || cp "$BOOT/Image.gz-dtb" "$AK/Image.gz-dtb"
+          [ ! -s "$BOOT/Image.gz" ] || cp "$BOOT/Image.gz" "$AK/Image.gz"
+          [ ! -s "$BOOT/Image" ] || cp "$BOOT/Image" "$AK/Image"
+          [ ! -s "$BOOT/dtbo.img" ] || cp "$BOOT/dtbo.img" "$AK/dtbo.img"
+          find "$BOOT/dts" -type f \( -name '*.dtb' -o -name '*.dtbo' \) -exec cp -f {} "$AK/" \; 2>/dev/null || true
+
+          cat > "$AK/build-manifest-${MATRIX_LABEL}.txt" <<EOF
+          Variant: ${MATRIX_LABEL}
+          Short: ${MATRIX_SHORT}
+          Mode: ${MATRIX_MODE}
+          Repo: ${MATRIX_REPO}
+          Branch: ${MATRIX_BRANCH}
+          Kernel repo: ${KERNEL_REPO_INPUT}
+          Kernel branch: ${KERNEL_BRANCH_INPUT}
+          Defconfig: ${DEFCONFIG}
+          UTS_RELEASE: ${UTS}
+          Created UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          EOF
+
+          find "$AK" -maxdepth 4 -type f -printf '%p %s bytes\n' | sort | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-anykernel-tree.log"
+          [ -s "$AK/Image.gz" ] || [ -s "$AK/Image.gz-dtb" ] || { echo "ERROR: AnyKernel tree has no image"; exit 1; }
+
+          ZIP_NAME="Rubyx-${DEVICE_CODENAME}-DS-${MATRIX_SHORT}-${MATRIX_LABEL}-$(date -u +%Y%m%d-%H%M%S).zip"
+          ZIP_PATH="$ARTIFACTS_DIR/zips/$ZIP_NAME"
+          (cd "$AK" && zip -r9 "$ZIP_PATH" .)
+          unzip -l "$ZIP_PATH" | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-zip-list.log"
+          unzip -l "$ZIP_PATH" | grep -Eq 'Image\.gz|Image\.gz-dtb' || { echo "ERROR: zip has no image"; rm -f "$ZIP_PATH"; exit 1; }
+          ZIP_SIZE="$(stat -c%s "$ZIP_PATH")"
+          echo "$ZIP_SIZE bytes" | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-zip-size.log"
+          if [ "$ZIP_SIZE" -lt 10000000 ]; then
+            echo "ERROR: zip too small" | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-zip-too-small.log"
+            rm -f "$ZIP_PATH"
+            exit 1
+          fi
+          sha256sum "$ZIP_PATH" | tee "$ARTIFACTS_DIR/logs/$ZIP_NAME.sha256"
+          echo "$ZIP_NAME" | tee "$ARTIFACTS_DIR/logs/${MATRIX_LABEL}-selected-output-zip.log"
 
       - name: Final artifact tree
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          find artifacts -maxdepth 6 -type f | sort | tee artifacts/logs/final-artifacts-tree-${{ matrix.variant }}.log
-          df -h | tee artifacts/logs/disk-after-${{ matrix.variant }}.log || true
-          free -h | tee artifacts/logs/memory-after-${{ matrix.variant }}.log || true
+          find artifacts -maxdepth 6 -type f | sort | tee artifacts/logs/final-artifacts-tree-${{ matrix.label }}.log
+          df -h | tee artifacts/logs/disk-after-${{ matrix.label }}.log || true
+          free -h | tee artifacts/logs/memory-after-${{ matrix.label }}.log || true
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Rubyx-${{ env.DEVICE_CODENAME }}-${{ matrix.variant }}
+          name: Rubyx-${{ env.DEVICE_CODENAME }}-${{ matrix.short }}-${{ matrix.label }}
           path: artifacts/
           retention-days: 30
