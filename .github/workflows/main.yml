@@ -369,8 +369,8 @@ jobs:
 
           ZIP_NAME="Rubyx-${DEVICE_CODENAME}-${OUTPUT_SUFFIX}-$(date -u +%Y%m%d-%H%M%S).zip"
           (cd "$AK" && zip -r9 "../../artifacts/zips/$ZIP_NAME" .)
-          sha256sum "../../artifacts/zips/$ZIP_NAME" | tee "../../artifacts/logs/$ZIP_NAME.sha256"
-          ls -lah "../../artifacts/zips/$ZIP_NAME" | tee ../artifacts/logs/zips.log
+          sha256sum "../artifacts/zips/$ZIP_NAME" | tee "../artifacts/logs/$ZIP_NAME.sha256"
+          ls -lah "../artifacts/zips/$ZIP_NAME" | tee ../artifacts/logs/zips.log
           
           echo "zip_name=${ZIP_NAME}" >> "$GITHUB_ENV"
           echo "zip_path=artifacts/zips/${ZIP_NAME}" >> "$GITHUB_ENV"
