@@ -411,7 +411,7 @@ jobs:
 
             > Built automatically via GitHub Actions from [kernel_xiaomi_mt6877](https://github.com/criollojoel10/kernel_xiaomi_mt6877)
         env:
-          GITHUB_TOKEN: *** secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
