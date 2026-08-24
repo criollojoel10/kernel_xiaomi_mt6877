@@ -1747,7 +1747,19 @@ static int __do_execve_file(int fd, struct filename *filename,
 	if (IS_ERR(filename))
 		return PTR_ERR(filename);
 #ifdef CONFIG_KSU
-	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+	/*
+	 * HOTSPOT STABILIZATION (docs: kernel-patches/README.md):
+	 * uid==0 (init, netd, HALs) nunca necesita la reescritura de ruta su.
+	 * Pasar daemons root por el hook rompe spawns silenciosamente
+	 * (exit 127 -> EPIPE dnsmasq -> "Error in setDnsForwarders" -> SoftAP down).
+	 */
+	if (current_uid().val != 0) {
+		struct filename *orig_fn = filename;
+
+		ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+		if (unlikely(!filename || IS_ERR(filename)))
+			filename = orig_fn;
+	}
 #endif
 	/*
 	 * We move the actual failure in case of RLIMIT_NPROC excess from
