@@ -1,13 +1,14 @@
 #!/bin/sh
-# Setup RKSU (rsuntk/KernelSU) pinned to a Feb-2026 commit (constantq-era,
-# with kprobe hook for non-GKI 4.19) + externally provided susfs 1.5.x (already
-# in tree from ksu_susfs-v15). SUS_MOUNT enabled via ruby_defconfig.
+# Setup KernelSU-Next driver from Constantq/xiaomi_fog_caf-kernel_ksun_susfs
+# (proven working on msm-4.19 non-GKI with full pre-5.x compat layer:
+#  TWA_RESUME define, fsnotify ops macro, seccomp_cache >=5.10 guard,
+#  MODULE_IMPORT_NS guards, app_profile filter_count guards).
+# Paired with the in-tree susfs v2.0.0 all_procs variant (proven on ruby).
 set -eu
 
 GKI_ROOT=$(pwd)
-REPO_URL="https://github.com/rsuntk/KernelSU"
-BRANCH="main"
-COMMIT="9f68f239f62c242964311aeec3080ced9cda4d29"
+REPO_URL="https://github.com/Constantq/xiaomi_fog_caf-kernel_ksun_susfs"
+PIN_SHA="dcd534ae759a3333b55febbd53347de1174963bb"
 
 if test -d "$GKI_ROOT/common/drivers"; then
      DRIVER_DIR="$GKI_ROOT/common/drivers"
@@ -21,42 +22,30 @@ fi
 DRIVER_MAKEFILE=$DRIVER_DIR/Makefile
 DRIVER_KCONFIG=$DRIVER_DIR/Kconfig
 
-echo "[+] Setting up RKSU ($COMMIT)..."
-test -d "$GKI_ROOT/KernelSU" || git clone --branch "$BRANCH" "$REPO_URL" KernelSU
-cd "$GKI_ROOT/KernelSU"
-git fetch origin "$COMMIT"
-git checkout "$COMMIT"
+echo "[+] Setting up KernelSU-Next ($PIN_SHA)..."
+if ! test -d "$GKI_ROOT/KernelSU-Next-src"; then
+    git clone --depth 1 --filter=blob:none --sparse "$REPO_URL" KernelSU-Next-src
+fi
+cd "$GKI_ROOT/KernelSU-Next-src"
+CUR=$(git rev-parse HEAD)
+if [ "$CUR" != "$PIN_SHA" ]; then
+    echo "[!] main moved ($CUR), fetching pinned $PIN_SHA"
+    git fetch --depth 1 --filter=blob:none origin "$PIN_SHA"
+    git checkout --detach "$PIN_SHA"
+fi
+git sparse-checkout set KernelSU-Next
+test -f KernelSU-Next/kernel/Kbuild || { echo '[ERROR] KernelSU-Next/kernel missing'; exit 127; }
 
-# --- 4.19 non-GKI porting fixes (RKSU targets 5.x+/6.x) ---
-# 1) MODULE_IMPORT_NS() does not exist before 5.x; drop it from ksu.c tail.
-if grep -q "MODULE_IMPORT_NS" kernel/ksu.c 2>/dev/null; then
-    sed -i '/MODULE_IMPORT_NS/d' kernel/ksu.c
-    echo "[+] Patched kernel/ksu.c: removed MODULE_IMPORT_NS (4.19)"
-fi
-# 2) task_work_add() 3rd arg is 'bool' on 4.19 (not TWA_*); fix all callers.
-if grep -rq "TWA_RESUME" kernel/ 2>/dev/null; then
-    grep -rl "TWA_RESUME" kernel/ 2>/dev/null | xargs -r sed -i 's/TWA_RESUME/true/g'
-    echo "[+] Patched kernel/*: TWA_RESUME -> true (4.19 task_work_add bool)"
-fi
-# 3) put_task_struct needs <linux/sched/task.h>
-if grep -q "put_task_struct" kernel/allowlist.c 2>/dev/null; then
-    sed -i 's|#include <linux/version.h>|#include <linux/version.h>\n#include <linux/sched/task.h>|' kernel/allowlist.c
-    echo "[+] Patched kernel/allowlist.c: added sched/task.h"
-fi
-# 4) struct seccomp has no filter_count member before ~5.x.
-if grep -q "filter_count" kernel/app_profile.c 2>/dev/null; then
-    sed -i 's|atomic_set(\&current->seccomp.filter_count, 0);|#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)\n    atomic_set(\&current->seccomp.filter_count, 0);\n#endif|' kernel/app_profile.c
-    echo "[+] Patched kernel/app_profile.c: guarded seccomp.filter_count (4.19)"
-fi
-# 5) seccomp_filter_release() only exists on newer kernels; 4.19 uses
-#    put_seccomp_filter() (declared in <linux/seccomp.h>).
-if grep -q "seccomp_filter_release(fake);" kernel/app_profile.c 2>/dev/null; then
-    sed -i 's|seccomp_filter_release(fake);|#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)\n    seccomp_filter_release(fake);\n#else\n    put_seccomp_filter(fake);\n#endif|' kernel/app_profile.c
-    echo "[+] Patched kernel/app_profile.c: put_seccomp_filter fallback (4.19)"
+# --- ruby-specific adaptation ---
+# Our in-tree susfs exports the ALL-procs variant of the hide-sus-mounts cmd
+# (CMD number 0x55561 identical on both sides); align the driver call name.
+if grep -q "susfs_set_hide_sus_mnts_for_non_su_procs" KernelSU-Next/kernel/supercalls.c 2>/dev/null; then
+    sed -i 's/susfs_set_hide_sus_mnts_for_non_su_procs/susfs_set_hide_sus_mnts_for_all_procs/g' KernelSU-Next/kernel/supercalls.c
+    echo "[+] Patched supercalls.c: non_su_procs -> all_procs"
 fi
 
 cd "$DRIVER_DIR"
-ln -sf "$(realpath --relative-to=$DRIVER_DIR $GKI_ROOT/KernelSU/kernel)" kernelsu
+ln -sf "$(realpath --relative-to=$DRIVER_DIR $GKI_ROOT/KernelSU-Next-src/KernelSU-Next/kernel)" kernelsu
 echo "[+] Symlink created."
 grep -q "kernelsu" $DRIVER_MAKEFILE || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> $DRIVER_MAKEFILE
 grep -q 'source "drivers/kernelsu/Kconfig"' $DRIVER_KCONFIG || printf 'source "drivers/kernelsu/Kconfig"\n' >> $DRIVER_KCONFIG
