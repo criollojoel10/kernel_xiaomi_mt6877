@@ -1,9 +1,8 @@
 #!/bin/sh
 # Setup KernelSU-Next driver from Constantq/xiaomi_fog_caf-kernel_ksun_susfs
-# (proven working on msm-4.19 non-GKI with full pre-5.x compat layer:
-#  TWA_RESUME define, fsnotify ops macro, seccomp_cache >=5.10 guard,
-#  MODULE_IMPORT_NS guards, app_profile filter_count guards).
-# Paired with the in-tree susfs v2.0.0 all_procs variant (proven on ruby).
+# (proven on msm-4.19 non-GKI: full pre-5.x compat layer built-in).
+# Paired with our in-tree susfs v2.0.0 all_procs variant (proven on ruby).
+# Driver adaptations below bridge the small API delta of the older susfs.
 set -eu
 
 GKI_ROOT=$(pwd)
@@ -36,13 +35,21 @@ fi
 git sparse-checkout set KernelSU-Next
 test -f KernelSU-Next/kernel/Kbuild || { echo '[ERROR] KernelSU-Next/kernel missing'; exit 127; }
 
-# --- ruby-specific adaptation ---
-# Our in-tree susfs exports the ALL-procs variant of the hide-sus-mounts cmd
-# (CMD number 0x55561 identical on both sides); align the driver call name.
-if grep -q "susfs_set_hide_sus_mnts_for_non_su_procs" KernelSU-Next/kernel/supercalls.c 2>/dev/null; then
-    sed -i 's/susfs_set_hide_sus_mnts_for_non_su_procs/susfs_set_hide_sus_mnts_for_all_procs/g' KernelSU-Next/kernel/supercalls.c
-    echo "[+] Patched supercalls.c: non_su_procs -> all_procs"
-fi
+K=KernelSU-Next/kernel
+
+# --- ruby adaptations: older in-tree susfs v2.0.0 (all_procs variant) ---
+# 1) all-procs naming (CMD number 0x55561 identical on both sides).
+sed -i 's/susfs_set_hide_sus_mnts_for_non_su_procs/susfs_set_hide_sus_mnts_for_all_procs/g' $K/supercalls.c
+sed -i 's/CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS/CMD_SUSFS_HIDE_SUS_MNTS_FOR_ALL_PROCS/g' $K/supercalls.c
+echo "[+] Patched supercalls.c: non_su_procs -> all_procs (fn + CMD)"
+# 2) sdcard monitor kthread only exists in newer upstream susfs; drop the call.
+sed -i '/susfs_start_sdcard_monitor_fn();/d' $K/supercalls.c
+echo "[+] Patched supercalls.c: removed sdcard monitor call"
+# 3) per-proc umounted tracking does not exist in our susfs; stub no-ops.
+sed -i 's|#include <linux/uaccess.h>|#include <linux/uaccess.h>\n/* ruby compat: not present in in-tree susfs v2.0.0 */\nstatic inline bool susfs_is_current_proc_umounted(void) { return false; }|' $K/supercalls.c
+echo "[+] Patched supercalls.c: stub susfs_is_current_proc_umounted"
+sed -i 's|#include <linux/sched.h>|#include <linux/sched.h>\n/* ruby compat: not present in in-tree susfs v2.0.0 */\nstatic inline void susfs_set_current_proc_umounted(void) {}|' $K/setuid_hook.c
+echo "[+] Patched setuid_hook.c: stub susfs_set_current_proc_umounted"
 
 cd "$DRIVER_DIR"
 ln -sf "$(realpath --relative-to=$DRIVER_DIR $GKI_ROOT/KernelSU-Next-src/KernelSU-Next/kernel)" kernelsu
