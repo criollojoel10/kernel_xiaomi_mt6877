@@ -35,6 +35,10 @@
 #include "internal.h"
 #include <trace/hooks/syscall_check.h>
 
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs_def.h>
+#endif
+
 int do_truncate2(struct vfsmount *mnt, struct dentry *dentry, loff_t length,
 		unsigned int time_attrs, struct file *filp)
 {
@@ -354,6 +358,11 @@ SYSCALL_DEFINE4(fallocate, int, fd, int, mode, loff_t, offset, loff_t, len)
  * We do this by temporarily clearing all FS-related capabilities and
  * switching the fsuid/fsgid around to the real ones.
  */
+#ifdef CONFIG_KSU_SUSFS
+extern bool __ksu_is_allow_uid_for_current(uid_t uid);
+extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,
+			int *flags);
+#endif
 long do_faccessat(int dfd, const char __user *filename, int mode)
 {
 	const struct cred *old_cred;
@@ -363,6 +372,18 @@ long do_faccessat(int dfd, const char __user *filename, int mode)
 	struct vfsmount *mnt;
 	int res;
 	unsigned int lookup_flags = LOOKUP_FOLLOW;
+
+#ifdef CONFIG_KSU_SUSFS
+	if (likely(susfs_is_current_proc_umounted())) {
+		goto orig_flow;
+	}
+
+	if (unlikely(__ksu_is_allow_uid_for_current(current_uid().val))) {
+		ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
+	}
+
+orig_flow:
+#endif
 
 	if (mode & ~S_IRWXO)	/* where's F_OK, X_OK, W_OK, R_OK? */
 		return -EINVAL;
@@ -451,16 +472,8 @@ out:
 	return res;
 }
 
-#ifdef CONFIG_KSU
-__attribute__((hot))
-extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
- int *mode, int *flags);
-#endif
 SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
 {
-#ifdef CONFIG_KSU
- 	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
-#endif
 	return do_faccessat(dfd, filename, mode);
 }
 
@@ -1222,21 +1235,53 @@ SYSCALL_DEFINE1(close, unsigned int, fd)
 	return retval;
 }
 
-/**
- * close_range() - Close all file descriptors in a given range.
- *
- * @fd:     starting file descriptor to close
- * @max_fd: last file descriptor to close
- * @flags:  reserved for future extensions
- *
- * This closes a range of file descriptors. All file descriptors
- * from @fd up to and including @max_fd are closed.
- * Currently, errors to close a given file descriptor are ignored.
+/*
+ * Basic close_range implementation to satisfy syscall wiring backport.
+ * Supports flags=0 (close fds) and CLOSE_RANGE_CLOEXEC (0x1) by setting
+ * close-on-exec on the range. Other flags are rejected.
  */
 SYSCALL_DEFINE3(close_range, unsigned int, fd, unsigned int, max_fd,
 		unsigned int, flags)
 {
-	return __close_range(fd, max_fd, flags);
+	struct files_struct *files = current->files;
+	struct fdtable *fdt;
+	unsigned int end;
+	unsigned int max_fds;
+	unsigned int i;
+	int retval = 0;
+
+	/* Only support CLOSE_RANGE_CLOEXEC (0x1) for now. */
+	if (flags & ~0x1)
+		return -EINVAL;
+
+	if (max_fd != ~0U && fd > max_fd)
+		return -EINVAL;
+
+	rcu_read_lock();
+	fdt = files_fdtable(files);
+	max_fds = fdt->max_fds;
+	end = (max_fd == ~0U) ? (max_fds ? max_fds - 1 : 0) : max_fd;
+	/* Clamp to current table size to avoid walking beyond */
+	if (end >= max_fds && max_fds)
+		end = max_fds - 1;
+	rcu_read_unlock();
+
+	if (fd >= max_fds)
+		return 0;
+
+	if (flags & 0x1) {
+		for (i = fd; i <= end; i++)
+			set_close_on_exec(i, 1);
+		return 0;
+	}
+
+	for (i = fd; i <= end; i++) {
+		int err = __close_fd(files, i);
+		if (err && err != -EBADF)
+			retval = err;
+	}
+
+	return retval;
 }
 
 /*
