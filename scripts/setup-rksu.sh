@@ -1,7 +1,7 @@
 #!/bin/sh
 # Setup RKSU (rsuntk/KernelSU) pinned to a Feb-2026 commit (constantq-era,
-# with LSM hook for non-GKI 4.19) + externally provided susfs 1.5.x (already
-# in tree from ksu_susfs-v15). SUS_MOUNT enabled via vendor fragments.
+# with kprobe hook for non-GKI 4.19) + externally provided susfs 1.5.x (already
+# in tree from ksu_susfs-v15). SUS_MOUNT enabled via ruby_defconfig.
 set -eu
 
 GKI_ROOT=$(pwd)
@@ -26,6 +26,14 @@ test -d "$GKI_ROOT/KernelSU" || git clone --branch "$BRANCH" "$REPO_URL" KernelS
 cd "$GKI_ROOT/KernelSU"
 git fetch origin "$COMMIT"
 git checkout "$COMMIT"
+
+# --- 4.19 non-GKI porting fixes (RKSU targets 5.x+/6.x) ---
+# MODULE_IMPORT_NS() does not exist before 5.x; drop it from ksu.c tail.
+if grep -q "MODULE_IMPORT_NS" kernel/ksu.c 2>/dev/null; then
+    sed -i '/MODULE_IMPORT_NS/d' kernel/ksu.c
+    echo "[+] Patched kernel/ksu.c: removed MODULE_IMPORT_NS (4.19)"
+fi
+
 cd "$DRIVER_DIR"
 ln -sf "$(realpath --relative-to=$DRIVER_DIR $GKI_ROOT/KernelSU/kernel)" kernelsu
 echo "[+] Symlink created."
