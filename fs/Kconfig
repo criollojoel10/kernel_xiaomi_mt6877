@@ -128,7 +128,6 @@ menu "Caches"
 source "fs/fscache/Kconfig"
 source "fs/cachefiles/Kconfig"
 
-source "fs/susfs/Kconfig"
 
 endmenu
 
