@@ -34,7 +34,7 @@ if grep -q "MODULE_IMPORT_NS" kernel/ksu.c 2>/dev/null; then
     echo "[+] Patched kernel/ksu.c: removed MODULE_IMPORT_NS (4.19)"
 fi
 # 2) task_work_add() 3rd arg is 'bool' on 4.19 (not TWA_*); fix callers.
-if grep -q "TWA_RESUME" kernel/ 2>/dev/null; then
+if grep -rq "TWA_RESUME" kernel/ 2>/dev/null; then
     grep -rl "TWA_RESUME" kernel/ 2>/dev/null | xargs -r sed -i 's/TWA_RESUME/true/g'
     echo "[+] Patched kernel/*: TWA_RESUME -> true (4.19 task_work_add bool)"
 fi
