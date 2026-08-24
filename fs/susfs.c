@@ -1453,7 +1453,20 @@ void susfs_start_sdcard_monitor_fn(void) {
 }
 
 /* susfs_init */
+// - defer extra susfs works to workqueue after do_umount in ksu_handle_setresuid()
+//   so that we do not block there and reduce the risk of time side channel as much as possible.
+struct work_struct susfs_extra_works;
+static void susfs_run_extra_works(struct work_struct *work) {
+	extern struct cred *ksu_cred;
+	if (!ksu_cred)
+		return;
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	susfs_run_sus_path_loop();
+#endif
+}
+
 void susfs_init(void) {
+	INIT_WORK(&susfs_extra_works, susfs_run_extra_works);
 	static_branch_enable(&ksu_init_rc_hook_key_false);
 	static_branch_enable(&ksu_input_hook_key_false);
 	static_branch_enable(&susfs_set_sdcard_android_data_decrypted_key_false);
