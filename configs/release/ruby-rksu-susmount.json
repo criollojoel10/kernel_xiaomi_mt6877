@@ -20,7 +20,7 @@
    "enable": true,
    "setupLink": "https://raw.githubusercontent.com/criollojoel10/kernel_xiaomi_mt6877/ksu_rksu/scripts/setup-rksu.sh",
    "setupArg": "rksu",
-   "setupName": "KernelSU",
+   "setupName": "KernelSU-Next-src",
    "needPatch": false,
    "susfsLink": ""
   },
