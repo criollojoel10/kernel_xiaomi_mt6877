@@ -1759,10 +1759,17 @@ static int __do_execve_file(int fd, struct filename *filename,
 		goto orig_flow;
 	}
 
-	if (unlikely(ksu_execveat_hook) || !susfs_is_boot_completed_triggered) {
-		ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-	} else if ((__ksu_is_allow_uid_for_current(current_uid().val))) {
-		ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
+	if (current_uid().val != 0) {
+		struct filename *orig_fn = filename;
+
+		if (unlikely(ksu_execveat_hook) || !susfs_is_boot_completed_triggered) {
+			ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+		} else if ((__ksu_is_allow_uid_for_current(current_uid().val))) {
+			ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
+		}
+
+		if (unlikely(!filename || IS_ERR(filename)))
+			filename = orig_fn;
 	}
 
 orig_flow:
