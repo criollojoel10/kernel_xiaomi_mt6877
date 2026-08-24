@@ -18,7 +18,7 @@
     },
     "kernelsu": {
       "enable": true,
-      "setupLink": "https://raw.githubusercontent.com/DXRN-MoonWake/KernelSU-Next/legacy-susfs/kernel/setup.sh",
+      "setupLink": "https://raw.githubusercontent.com/criollojoel10/kernel_xiaomi_mt6877/ksu_susfs-v15/scripts/setup-kernelsu-legacy-susfs.sh",
       "setupArg": "legacy-susfs",
       "setupName": "KernelSU",
       "needPatch": false,
