@@ -33,7 +33,7 @@ if grep -q "MODULE_IMPORT_NS" kernel/ksu.c 2>/dev/null; then
     sed -i '/MODULE_IMPORT_NS/d' kernel/ksu.c
     echo "[+] Patched kernel/ksu.c: removed MODULE_IMPORT_NS (4.19)"
 fi
-# 2) task_work_add() 3rd arg is 'bool' on 4.19 (not TWA_*); fix callers.
+# 2) task_work_add() 3rd arg is 'bool' on 4.19 (not TWA_*); fix all callers.
 if grep -rq "TWA_RESUME" kernel/ 2>/dev/null; then
     grep -rl "TWA_RESUME" kernel/ 2>/dev/null | xargs -r sed -i 's/TWA_RESUME/true/g'
     echo "[+] Patched kernel/*: TWA_RESUME -> true (4.19 task_work_add bool)"
@@ -42,6 +42,17 @@ fi
 if grep -q "put_task_struct" kernel/allowlist.c 2>/dev/null; then
     sed -i 's|#include <linux/version.h>|#include <linux/version.h>\n#include <linux/sched/task.h>|' kernel/allowlist.c
     echo "[+] Patched kernel/allowlist.c: added sched/task.h"
+fi
+# 4) struct seccomp has no filter_count member before ~5.x.
+if grep -q "filter_count" kernel/app_profile.c 2>/dev/null; then
+    sed -i 's|atomic_set(\&current->seccomp.filter_count, 0);|#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)\n    atomic_set(\&current->seccomp.filter_count, 0);\n#endif|' kernel/app_profile.c
+    echo "[+] Patched kernel/app_profile.c: guarded seccomp.filter_count (4.19)"
+fi
+# 5) seccomp_filter_release() only exists on newer kernels; 4.19 uses
+#    put_seccomp_filter() (declared in <linux/seccomp.h>).
+if grep -q "seccomp_filter_release(fake);" kernel/app_profile.c 2>/dev/null; then
+    sed -i 's|seccomp_filter_release(fake);|#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)\n    seccomp_filter_release(fake);\n#else\n    put_seccomp_filter(fake);\n#endif|' kernel/app_profile.c
+    echo "[+] Patched kernel/app_profile.c: put_seccomp_filter fallback (4.19)"
 fi
 
 cd "$DRIVER_DIR"
