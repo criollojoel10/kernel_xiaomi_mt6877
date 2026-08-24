@@ -45,11 +45,8 @@ echo "[+] Patched supercalls.c: non_su_procs -> all_procs (fn + CMD)"
 # 2) sdcard monitor kthread only exists in newer upstream susfs; drop the call.
 sed -i '/susfs_start_sdcard_monitor_fn();/d' $K/supercalls.c
 echo "[+] Patched supercalls.c: removed sdcard monitor call"
-# 3) per-proc umounted tracking does not exist in our susfs; stub no-ops.
-sed -i 's|#include <linux/uaccess.h>|#include <linux/uaccess.h>\n/* ruby compat: not present in in-tree susfs v2.0.0 */\nstatic inline bool susfs_is_current_proc_umounted(void) { return false; }|' $K/supercalls.c
-echo "[+] Patched supercalls.c: stub susfs_is_current_proc_umounted"
-sed -i 's|#include <linux/sched.h>|#include <linux/sched.h>\n/* ruby compat: not present in in-tree susfs v2.0.0 */\nstatic inline void susfs_set_current_proc_umounted(void) {}|' $K/setuid_hook.c
-echo "[+] Patched setuid_hook.c: stub susfs_set_current_proc_umounted"
+# 3) per-proc umounted tracking already exists in our susfs_def.h (TIF_PROC_UMOUNTED).
+echo "[+] susfs_def.h provides proc-umounted helpers; no stub needed"
 
 cd "$DRIVER_DIR"
 ln -sf "$(realpath --relative-to=$DRIVER_DIR $GKI_ROOT/KernelSU-Next-src/KernelSU-Next/kernel)" kernelsu
