@@ -28,10 +28,20 @@ git fetch origin "$COMMIT"
 git checkout "$COMMIT"
 
 # --- 4.19 non-GKI porting fixes (RKSU targets 5.x+/6.x) ---
-# MODULE_IMPORT_NS() does not exist before 5.x; drop it from ksu.c tail.
+# 1) MODULE_IMPORT_NS() does not exist before 5.x; drop it from ksu.c tail.
 if grep -q "MODULE_IMPORT_NS" kernel/ksu.c 2>/dev/null; then
     sed -i '/MODULE_IMPORT_NS/d' kernel/ksu.c
     echo "[+] Patched kernel/ksu.c: removed MODULE_IMPORT_NS (4.19)"
+fi
+# 2) task_work_add() 3rd arg is 'bool' on 4.19 (not TWA_*); fix callers.
+if grep -q "TWA_RESUME" kernel/ 2>/dev/null; then
+    grep -rl "TWA_RESUME" kernel/ 2>/dev/null | xargs -r sed -i 's/TWA_RESUME/true/g'
+    echo "[+] Patched kernel/*: TWA_RESUME -> true (4.19 task_work_add bool)"
+fi
+# 3) put_task_struct needs <linux/sched/task.h>
+if grep -q "put_task_struct" kernel/allowlist.c 2>/dev/null; then
+    sed -i 's|#include <linux/version.h>|#include <linux/version.h>\n#include <linux/sched/task.h>|' kernel/allowlist.c
+    echo "[+] Patched kernel/allowlist.c: added sched/task.h"
 fi
 
 cd "$DRIVER_DIR"
