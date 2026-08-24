@@ -20,7 +20,7 @@
       "enable": true,
       "setupLink": "https://raw.githubusercontent.com/criollojoel10/kernel_xiaomi_mt6877/ksu_susfs-v15/scripts/setup-kernelsu-legacy-susfs.sh",
       "setupArg": "legacy-susfs",
-      "setupName": "KernelSU",
+      "setupName": "KernelSU-Next",
       "needPatch": false,
       "susfsLink": ""
     },
