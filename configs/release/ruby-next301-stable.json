@@ -12,12 +12,15 @@
     "output_image": "Image.gz-dtb",
     "additional_script_link": "disabled",
     "additional_post_script_link": "disabled",
-    "kp": { "use": false, "kpimg_link": "" },
+    "kp": {
+      "use": false,
+      "kpimg_link": ""
+    },
     "kernelsu": {
       "enable": true,
       "setupLink": "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/v3.0.1-legacy/kernel/setup.sh",
       "setupArg": "v3.0.1-legacy",
-      "setupName": "KernelSU",
+      "setupName": "KernelSU-Next",
       "needPatch": false,
       "susfsLink": ""
     },
@@ -32,6 +35,9 @@
         "llvm_dis": "llvm-dis"
       }
     ],
-    "AnyKernel3": { "repo": "https://github.com/DPR-MoonWake/AnyKernel3", "branch": "aeron" }
+    "AnyKernel3": {
+      "repo": "https://github.com/DPR-MoonWake/AnyKernel3",
+      "branch": "aeron"
+    }
   }
 ]
