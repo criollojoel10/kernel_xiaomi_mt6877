@@ -48,6 +48,20 @@ echo "[+] Patched supercalls.c: removed sdcard monitor call"
 # 3) per-proc umounted tracking already exists in our susfs_def.h (TIF_PROC_UMOUNTED).
 echo "[+] susfs_def.h provides proc-umounted helpers; no stub needed"
 
+# 6) pkg_observer.c: fsnotify 4.19 usa handle_event, no handle_inode_event.
+if grep -q "handle_inode_event" kernel/pkg_observer.c 2>/dev/null; then
+    echo "[+] AVISO: pkg_observer.c requiere porte fsnotify manual para 4.19"
+fi
+
+# 7) Manager detection fix (SukiSU-Ultra issue #799 / ref OnePlus 6):
+#    O_CLOEXEC en ksu_install_fd() rompe el handshake del manager
+#    (kernel bootea y corona al manager, pero este no lo detecta).
+if grep -q "get_unused_fd_flags(O_CLOEXEC)" kernel/supercalls.c 2>/dev/null; then
+    sed -i 's/fd = get_unused_fd_flags(O_CLOEXEC);/fd = get_unused_fd_flags(0);/' kernel/supercalls.c
+    sed -i 's/O_RDWR | O_CLOEXEC);/O_RDWR);/' kernel/supercalls.c
+    echo "[+] Patched kernel/supercalls.c: O_CLOEXEC removed (manager detect fix)"
+fi
+
 cd "$DRIVER_DIR"
 ln -sf "$(realpath --relative-to=$DRIVER_DIR $GKI_ROOT/KernelSU-Next-src/KernelSU-Next/kernel)" kernelsu
 echo "[+] Symlink created."
