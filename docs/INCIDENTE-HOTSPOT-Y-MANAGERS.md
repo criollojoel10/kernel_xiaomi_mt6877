@@ -88,3 +88,32 @@ manager Next 3.0.1-spoofed vale ✓ — hotspot sigue roto (esperando build next
 - [ ] Fix `pkg_observer.c` fsnotify 4.19 si se retoma la línea RKSU
       (añadir fix #6 a scripts/setup-rksu.sh)
 - [ ] Si next301 estabiliza todo: proponer serie aguas arriba al maintainer
+
+## 10. Build 32: por qué el manager no aparece (RESUELTO)
+
+Ref: SukiSU-Ultra issue #799 + guía OnePlus 6 (qlAD/kernel_oneplus_sdm845).
+
+El kernel de build 32 (rsuntk@9f68f239) bootea y CORONA al manager
+(log "Crowning manager"), pero `ksu_install_fd()` entrega el fd del driver
+con **O_CLOEXEC** y el handshake manager<->kernel se rompe en ROMs con el
+comportamiento de fd handling de Android 16 QPR2 => el manager nunca
+"ve" el root.
+
+Fix aplicado a `scripts/setup-rksu.sh` en ksu_rksu (`dcfa1f64`):
+```
+fd = get_unused_fd_flags(0);          // antes O_CLOEXEC
+anon_inode_getfile(..., O_RDWR);      // antes O_RDWR | O_CLOEXEC
+```
+Ademas: el manager a usar debe ser el APK oficial de rsuntk mismo fork
+(la firma embebida es por-repo). ReSukiSU kernel acepta managers de
+tiann/rsuntk/MKSU/SukiSU (multi-manager), rsuntk puro NO.
+
+Pendiente RKSU: fix #6 fsnotify (pkg_observer.c handle_event) para que
+compile en 4.19.
+
+## 11. Build next301 (KSU-Next v3.0.1-legacy) — bitácora
+
+- Intento 1 (`32796207594`): falla en Integrate: el setup.sh de Next clona
+  en `KernelSU-Next/` y el workflow hace `cd $setupName` (=KernelSU).
+- Fix: config `setupName: KernelSU-Next` (`ff5e21cf`).
+- Intento 2 (`32797053437`): lanzado.
