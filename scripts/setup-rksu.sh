@@ -48,9 +48,12 @@ echo "[+] Patched supercalls.c: removed sdcard monitor call"
 # 3) per-proc umounted tracking already exists in our susfs_def.h (TIF_PROC_UMOUNTED).
 echo "[+] susfs_def.h provides proc-umounted helpers; no stub needed"
 
-# 6) pkg_observer.c: fsnotify 4.19 usa handle_event, no handle_inode_event.
+# 6) pkg_observer.c: porte fsnotify 4.19 (struct fsnotify_ops usa
+#    handle_event con 8 params, no handle_inode_event de kernels 5.x+).
 if grep -q "handle_inode_event" kernel/pkg_observer.c 2>/dev/null; then
-    echo "[+] AVISO: pkg_observer.c requiere porte fsnotify manual para 4.19"
+    perl -0pi -e 's/static int ksu_handle_inode_event\(struct fsnotify_mark \*mark, u32 mask,\n +struct inode \*inode, struct inode \*dir,\n +const struct qstr \*file_name, u32 cookie\)/static int ksu_handle_inode_event(struct fsnotify_group *group,\n                                  struct inode *inode, u32 mask,\n                                  const void *data, int data_type,\n                                  const unsigned char *file_name, u32 cookie,\n                                  struct fsnotify_iter_info *iter_info)/' kernel/pkg_observer.c
+    sed -i 's/\.handle_inode_event = ksu_handle_inode_event,/.handle_event = ksu_handle_inode_event,/' kernel/pkg_observer.c
+    echo "[+] Patched kernel/pkg_observer.c: fsnotify ops -> handle_event (4.19)"
 fi
 
 # 7) Manager detection fix (SukiSU-Ultra issue #799 / ref OnePlus 6):
