@@ -28,13 +28,38 @@
       {
         "repo": "https://gitlab.com/DR-KernelArchive/clang/r563880.git",
         "branch": "main",
-        "binary": "bin/clang",
-        "prefix": "clang-AOSP/bin/",
-        "needs_host_toolchain": "true",
-        "ld": "ld.lld",
-        "llvm_dis": "llvm-dis"
+        "name": "clang-AOSP",
+        "binPath": [
+          "/bin"
+        ]
       }
     ],
+    "ccache": false,
+    "params": {
+      "ARCH": "arm64",
+      "CC": "clang-AOSP/bin/clang",
+      "KCFLAGS": "-O3 -march=armv8.2-a+crypto+fp16+dotprod -mcpu=cortex-a78 -mtune=cortex-a78",
+      "build_out": "Image.gz-dtb",
+      "externalCommand": {
+        "KBUILD_BUILD_HOST": "gmail.com",
+        "KBUILD_BUILD_USER": "aeronrules2",
+        "CROSS_COMPILE": "clang-AOSP/bin/aarch64-linux-gnu-",
+        "CROSS_COMPILE_ARM32": "clang-AOSP/bin/arm-linux-gnueabi-",
+        "LD": "clang-AOSP/bin/ld.lld",
+        "LLVM": "1",
+        "LLVM_IAS": "1",
+        "AR": "clang-AOSP/bin/llvm-ar",
+        "NM": "clang-AOSP/bin/llvm-nm",
+        "OBJCOPY": "clang-AOSP/bin/llvm-objcopy",
+        "OBJDUMP": "clang-AOSP/bin/llvm-objdump",
+        "READELF": "clang-AOSP/bin/llvm-readelf",
+        "OBJSIZE": "clang-AOSP/bin/llvm-size",
+        "STRIP": "clang-AOSP/bin/llvm-strip",
+        "LDGOLD": "clang-AOSP/bin/aarch64-linux-gnu-ld.gold",
+        "LLVM_AR": "clang-AOSP/bin/llvm-ar",
+        "LLVM_DIS": "clang-AOSP/bin/llvm-dis"
+      }
+    },
     "AnyKernel3": {
       "repo": "https://github.com/DPR-MoonWake/AnyKernel3",
       "branch": "aeron"
