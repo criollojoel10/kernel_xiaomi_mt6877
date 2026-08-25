@@ -1,0 +1,37 @@
+[
+  {
+    "kernelSource": {
+      "device": "ruby",
+      "vendor": "xiaomi",
+      "name": "Aeron-Phoenix-KSUNext301Stable-SuSFS-DroidSpaces",
+      "defconfig": "ruby_defconfig",
+      "extraConfig": "vendor/kernelsu.config vendor/susfs.config",
+      "repo": "https://github.com/criollojoel10/kernel_xiaomi_mt6877",
+      "branch": "ksu_susfs"
+    },
+    "output_image": "Image.gz-dtb",
+    "additional_script_link": "disabled",
+    "additional_post_script_link": "disabled",
+    "kp": { "use": false, "kpimg_link": "" },
+    "kernelsu": {
+      "enable": true,
+      "setupLink": "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/v3.0.1-legacy/kernel/setup.sh",
+      "setupArg": "v3.0.1-legacy",
+      "setupName": "KernelSU",
+      "needPatch": false,
+      "susfsLink": ""
+    },
+    "toolchains": [
+      {
+        "repo": "https://gitlab.com/DR-KernelArchive/clang/r563880.git",
+        "branch": "main",
+        "binary": "bin/clang",
+        "prefix": "clang-AOSP/bin/",
+        "needs_host_toolchain": "true",
+        "ld": "ld.lld",
+        "llvm_dis": "llvm-dis"
+      }
+    ],
+    "AnyKernel3": { "repo": "https://github.com/DPR-MoonWake/AnyKernel3", "branch": "aeron" }
+  }
+]
