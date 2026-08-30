@@ -34,7 +34,7 @@
         ]
       }
     ],
-    "ccache": false,
+    "ccache": true,
     "params": {
       "ARCH": "arm64",
       "CC": "clang-AOSP/bin/clang",

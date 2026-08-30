@@ -194,6 +194,20 @@ jobs:
           echo "Clone kernel source => ($KERNEL_REPO)"
           echo "KERNEL_COMMIT_HASH=$(git -C $KERNEL_NAME rev-parse HEAD)" >> $GITHUB_OUTPUT
           echo "KERNEL_COMMIT_HASH=$(git -C $KERNEL_NAME rev-parse HEAD)" >> $GITHUB_OUTPUT
+      - name: "Toolchain cache key"
+        id: toolchain_key
+        env:
+          toolchains: "${{ toJSON(matrix.repos.toolchains) }}"
+        run: |
+          echo "TC_KEY=$(echo -n "$toolchains" | sha1sum | cut -c1-12)" >> $GITHUB_OUTPUT
+      - name: "Cache toolchains"
+        uses: actions/cache@v3
+        with:
+          path: |
+            ${{ env.WORKSPACE }}/clang-AOSP
+          key: toolchain-${{ steps.toolchain_key.outputs.TC_KEY }}
+          restore-keys: |
+            toolchain-${{ steps.toolchain_key.outputs.TC_KEY }}
       - name: "Get toolchains"
         env:
           toolchains: "${{ toJSON(matrix.repos.toolchains) }}"
@@ -208,7 +222,9 @@ jobs:
 
             echo "Processing toolchain: $toolchain_name"
 
-            if [ -z "${toolchain_url:-}" ] || [ "$toolchain_url" = "null" ]; then
+            if [ -d "$toolchain_name" ] && [ ! -z "$(ls -A $toolchain_name 2>/dev/null)" ]; then
+              echo "Toolchain $toolchain_name already present (cache), skipping download."
+            elif [ -z "${toolchain_url:-}" ] || [ "$toolchain_url" = "null" ]; then
               echo "Cloning $toolchain_repo (branch: $toolchain_branch)"
               for attempt in {1..3}; do
                 git clone --recursive --depth=1 -j $(nproc) --branch "$toolchain_branch" "$toolchain_repo" "$toolchain_name" && break
