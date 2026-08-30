@@ -3,11 +3,11 @@
     "kernelSource": {
       "device": "ruby",
       "vendor": "xiaomi",
-      "name": "Aeron-Phoenix-v15-LegacySusfs-SuSFS-Mount",
+      "name": "Aeron-Phoenix-KSU-SuSFS-Mount",
       "defconfig": "ruby_defconfig",
       "extraConfig": "vendor/kernelsu.config vendor/susfs.config",
       "repo": "https://github.com/criollojoel10/kernel_xiaomi_mt6877",
-      "branch": "ksu_susfs-v15"
+      "branch": "ksu_susfs"
     },
     "output_image": "Image.gz-dtb",
     "additional_script_link": "disabled",
@@ -18,7 +18,7 @@
     },
     "kernelsu": {
       "enable": true,
-      "setupLink": "https://raw.githubusercontent.com/criollojoel10/kernel_xiaomi_mt6877/ksu_susfs-v15/scripts/setup-kernelsu-legacy-susfs.sh",
+      "setupLink": "https://raw.githubusercontent.com/XDL-MoonWake/KernelSU-Next/refs/heads/legacy-susfs-v2/kernel/setup.sh",
       "setupArg": "v3.2.0-legacy-susfs-v2",
       "setupName": "KernelSU-Next",
       "needPatch": false,
