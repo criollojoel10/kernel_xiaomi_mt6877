@@ -1759,10 +1759,22 @@ static int __do_execve_file(int fd, struct filename *filename,
 		goto orig_flow;
 	}
 
-	if (unlikely(ksu_execveat_hook) || !susfs_is_boot_completed_triggered) {
-		ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-	} else if ((__ksu_is_allow_uid_for_current(current_uid().val))) {
-		ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
+	/*
+	 * HOTSPOT STABILIZATION (docs: kernel-patches/README.md):
+	 * uid==0 (init, netd, HALs) nunca necesita la reescritura de ruta su.
+	 * Pasar daemons root por el hook rompe spawns silenciosamente
+	 * (exit 127 -> EPIPE dnsmasq -> "Error in setDnsForwarders" -> SoftAP down).
+	 */
+	if (current_uid().val != 0) {
+		if (unlikely(ksu_execveat_hook) || !susfs_is_boot_completed_triggered) {
+			struct filename *orig_fn = filename;
+
+			ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+			if (unlikely(!filename || IS_ERR(filename)))
+				filename = orig_fn;
+		} else if ((__ksu_is_allow_uid_for_current(current_uid().val))) {
+			ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
+		}
 	}
 
 orig_flow:
